@@ -22,6 +22,7 @@ limitations under the License.
 #include <stdio.h>
 #include <stdint.h>
 #include <string.h>
+#include <setjmp.h>
 
 #include "yara.h"
 #include "sizedstr.h"
@@ -58,6 +59,8 @@ limitations under the License.
 %option reentrant bison-bridge
 %option noyywrap
 %option nounistd
+%option noinput
+%option nounput
 %option yylineno
 %option prefix="yara_yy"
 %option outfile="lex.yy.c"
@@ -493,7 +496,21 @@ $({letter}|{digit}|_)*  {
 
 %%
 
-void yyerror(yyscan_t yyscanner, const char *error_message)
+
+void yyfatal(
+    yyscan_t yyscanner,
+    const char *error_message)
+{
+  YR_COMPILER* compiler = yyget_extra(yyscanner);
+
+  yyerror(yyscanner, error_message);
+  longjmp(compiler->error_recovery, 1);
+}
+
+
+void yyerror(
+    yyscan_t yyscanner,
+    const char *error_message)
 {
   YR_COMPILER* compiler = yyget_extra(yyscanner);
 
@@ -507,7 +524,13 @@ void yyerror(yyscan_t yyscanner, const char *error_message)
   */
 
   compiler->errors++;
-  compiler->last_error_line = yyget_lineno(yyscanner);
+
+  if (compiler->error_line != 0)
+    compiler->last_error_line = compiler->error_line;
+  else
+    compiler->last_error_line = yyget_lineno(yyscanner);
+
+  compiler->error_line = 0;
 
   if (compiler->file_name_stack_ptr > 0)
   {
@@ -559,6 +582,9 @@ int yr_lex_parse_rules_string(
   yyscan_t yyscanner;
   YY_BUFFER_STATE state;
 
+  if (setjmp(compiler->error_recovery) != 0)
+    return compiler->errors;
+
   yylex_init(&yyscanner);
 
   yyset_debug(1, yyscanner);
@@ -580,6 +606,10 @@ int yr_lex_parse_rules_file(
   YR_COMPILER* compiler)
 {
   yyscan_t yyscanner;
+
+  if (setjmp(compiler->error_recovery) != 0)
+    return compiler->errors;
+
   yylex_init(&yyscanner);
 
   #if YYDEBUG

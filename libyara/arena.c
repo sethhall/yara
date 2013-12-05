@@ -957,14 +957,14 @@ int yr_arena_load(
   YR_ARENA* new_arena;
   ARENA_FILE_HEADER header;
 
-  void* new_address;
-  int result;
   int32_t reloc_offset;
   uint8_t** reloc_address;
   uint8_t* reloc_target;
-  long file_size;
 
-  fh = fopen(filename, "r");
+  long file_size;
+  int result;
+
+  fh = fopen(filename, "rb");
 
   if (fh == NULL)
     return ERROR_COULD_NOT_OPEN_FILE;
@@ -1000,7 +1000,7 @@ int yr_arena_load(
     return ERROR_UNSUPPORTED_FILE_VERSION;
   }
 
-  result = yr_arena_create(1024, 0, &new_arena);
+  result = yr_arena_create(header.size, 0, &new_arena);
 
   if (result != ERROR_SUCCESS)
   {
@@ -1008,22 +1008,7 @@ int yr_arena_load(
     return result;
   }
 
-  page = new_arena->page_list_head;
-
-  new_address = yr_realloc(
-      page->address,
-      header.size);
-
-  if (new_address != NULL)
-  {
-    page->address = new_address;
-  }
-  else
-  {
-    fclose(fh);
-    yr_arena_destroy(new_arena);
-    return ERROR_INSUFICIENT_MEMORY;
-  }
+  page = new_arena->current_page;
 
   if (fread(page->address, header.size, 1, fh) != 1)
   {

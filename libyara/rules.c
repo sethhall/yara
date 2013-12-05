@@ -153,7 +153,7 @@ inline int _yr_scan_wicompare(
 // matching in a faster way.
 //
 
-#define MAX_FAST_HEX_RE_STACK 200
+#define MAX_FAST_HEX_RE_STACK 300
 
 int _yr_scan_fast_hex_re_exec(
     uint8_t* code,
@@ -332,13 +332,6 @@ void match_callback(
   // total match length is the sum of backward and forward matches.
   match_length = match_length + callback_args->forward_matches;
 
-  if (flags & RE_FLAGS_START_ANCHORED && match_offset > 0)
-    return;
-
-  if (flags & RE_FLAGS_END_ANCHORED &&
-      match_offset + match_length != callback_args->data_size)
-    return;
-
   if (callback_args->full_word)
   {
     if (flags & RE_FLAGS_WIDE)
@@ -458,12 +451,6 @@ int _yr_scan_verify_re_match(
     exec = _yr_scan_fast_hex_re_exec;
   else
     exec = yr_re_exec;
-
-  if (STRING_IS_START_ANCHORED(ac_match->string))
-    flags |= RE_FLAGS_START_ANCHORED;
-
-  if (STRING_IS_END_ANCHORED(ac_match->string))
-    flags |= RE_FLAGS_END_ANCHORED;
 
   if (STRING_IS_NO_CASE(ac_match->string))
     flags |= RE_FLAGS_NO_CASE;
@@ -622,12 +609,6 @@ int _yr_scan_verify_literal_match(
       }
     }
 
-    if (STRING_IS_START_ANCHORED(string))
-      flags |= RE_FLAGS_START_ANCHORED;
-
-    if (STRING_IS_END_ANCHORED(string))
-      flags |= RE_FLAGS_END_ANCHORED;
-
     callback_args.string = string;
     callback_args.data = data;
     callback_args.data_size = data_size;
@@ -649,11 +630,17 @@ inline int _yr_scan_verify_match(
     uint8_t* data,
     size_t data_size,
     size_t offset,
-    YR_ARENA* matches_arena)
+    YR_ARENA* matches_arena,
+    int fast_scan_mode)
 {
   YR_STRING* string = ac_match->string;
 
   if (data_size - offset <= 0)
+    return ERROR_SUCCESS;
+
+  if (fast_scan_mode &&
+      STRING_IS_SINGLE_MATCH(string) &&
+      STRING_FOUND(string))
     return ERROR_SUCCESS;
 
   if (STRING_IS_LITERAL(string))
@@ -1075,8 +1062,6 @@ int yr_rules_scan_mem_block(
   size_t offset;
   size_t i;
 
-  int tidx = yr_get_tidx();
-
   current_state = rules->automaton->root;
   i = 0;
 
@@ -1095,7 +1080,8 @@ int yr_rules_scan_mem_block(
               data,
               data_size,
               offset,
-              matches_arena);
+              matches_arena,
+              fast_scan_mode);
       }
 
       ac_match = ac_match->next;
@@ -1132,7 +1118,8 @@ int yr_rules_scan_mem_block(
         data,
         data_size,
         data_size - ac_match->backtrack,
-        matches_arena);
+        matches_arena,
+        fast_scan_mode);
 
     ac_match = ac_match->next;
   }

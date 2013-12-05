@@ -19,6 +19,7 @@ limitations under the License.
 
 #include <stdio.h>
 #include <stdint.h>
+#include <setjmp.h>
 
 #ifdef WIN32
 #include <windows.h>
@@ -88,6 +89,7 @@ typedef pthread_mutex_t mutex_t;
 #define ERROR_LOOP_NESTING_LIMIT_EXCEEDED       32
 #define ERROR_DUPLICATE_LOOP_IDENTIFIER         33
 #define ERROR_TOO_MANY_SCAN_THREADS             34
+#define ERROR_INTERNAL_FATAL_ERROR              35
 
 
 #define CALLBACK_MSG_RULE_MATCHING            1
@@ -165,10 +167,8 @@ typedef pthread_mutex_t mutex_t;
 #define STRING_GFLAGS_ANONYMOUS         0x100
 #define STRING_GFLAGS_SINGLE_MATCH      0x200
 #define STRING_GFLAGS_LITERAL           0x400
-#define STRING_GFLAGS_START_ANCHORED    0x800
-#define STRING_GFLAGS_END_ANCHORED      0x1000
-#define STRING_GFLAGS_FITS_IN_ATOM      0x2000
-#define STRING_GFLAGS_NULL              0x4000
+#define STRING_GFLAGS_FITS_IN_ATOM      0x800
+#define STRING_GFLAGS_NULL              0x1000
 
 #define STRING_IS_HEX(x) \
     (((x)->g_flags) & STRING_GFLAGS_HEXADECIMAL)
@@ -202,12 +202,6 @@ typedef pthread_mutex_t mutex_t;
 
 #define STRING_IS_FAST_HEX_REGEXP(x) \
     (((x)->g_flags) & STRING_GFLAGS_FAST_HEX_REGEXP)
-
-#define STRING_IS_START_ANCHORED(x) \
-    (((x)->g_flags) & STRING_GFLAGS_START_ANCHORED)
-
-#define STRING_IS_END_ANCHORED(x) \
-    (((x)->g_flags) & STRING_GFLAGS_END_ANCHORED)
 
 #define STRING_IS_NULL(x) \
     ((x) == NULL || ((x)->g_flags) & STRING_GFLAGS_NULL)
@@ -509,8 +503,11 @@ typedef struct _YR_COMPILER
   int                 last_result;
   YR_REPORT_FUNC      error_report_function;
   int                 errors;
+  int                 error_line;
   int                 last_error;
   int                 last_error_line;
+
+  jmp_buf             error_recovery;
 
   YR_ARENA*           sz_arena;
   YR_ARENA*           rules_arena;

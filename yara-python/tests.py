@@ -1,6 +1,7 @@
 import tempfile
 import binascii
 import os
+import sys
 import unittest
 import yara
 
@@ -58,9 +59,18 @@ RE_TESTS = [
 
   # RE, string, expected result, expected matching
 
+  (')', '', SYNTAX_ERROR),
   ('abc', 'abc', SUCCEED, 'abc'),
+  ('abc', 'xbc', FAIL),
+  ('abc', 'axc', FAIL),
+  ('abc', 'abx', FAIL),
   ('abc', 'xabcx', SUCCEED, 'abc'),
+  ('abc', 'ababc', SUCCEED, 'abc'),
   ('a.c', 'abc', SUCCEED, 'abc'),
+  ('a.b', 'a\nb', FAIL),
+  ('a.*b', 'acc\nccb', FAIL),
+  ('a.{4,5}b', 'acc\nccb', FAIL),
+  ('a.b', 'a\rb', SUCCEED, 'a\rb'),
   ('ab*c', 'abc', SUCCEED, 'abc'),
   ('ab*c', 'ac', SUCCEED, 'ac'),
   ('ab*bc', 'abc', SUCCEED, 'abc'),
@@ -71,6 +81,9 @@ RE_TESTS = [
   ('ab+c', 'ac', FAIL),
   ('ab+', 'abbbb', SUCCEED, 'abbbb'),
   ('ab+?', 'abbbb', SUCCEED, 'ab'),
+  ('ab+bc', 'abc', FAIL),
+  ('ab+bc', 'abq', FAIL),
+  ('a+b+c', 'aabbabc', SUCCEED, 'abc'),
   ('ab?bc', 'abbbbc', FAIL),
   ('ab?c', 'abc', SUCCEED, 'abc'),
   ('ab*?', 'abbb', SUCCEED, 'a'),
@@ -80,6 +93,9 @@ RE_TESTS = [
   ('a(b|x)c', 'axc', SUCCEED, 'axc'),
   ('a(b|.)c', 'axc', SUCCEED, 'axc'),
   ('a(b|x|y)c', 'ayc', SUCCEED, 'ayc'),
+  ('(a+|b)*', 'ab', SUCCEED, 'ab'),
+  ('a|b|c|d|e', 'e', SUCCEED, 'e'),
+  ('(a|b|c|d|e)f', 'ef', SUCCEED, 'ef'),
   ('ab{1}c', 'abc', SUCCEED, 'abc'),
   ('ab{1,2}c', 'abbc', SUCCEED, 'abbc'),
   ('ab{1,}c', 'abbbc', SUCCEED, 'abbbc'),
@@ -111,6 +127,7 @@ RE_TESTS = [
   ('(abc', '', SYNTAX_ERROR),
   ('abc)', '', SYNTAX_ERROR),
   ('a[]b', '', SYNTAX_ERROR),
+  ('a\\', '', SYNTAX_ERROR),
   ('a[\\-b]', 'a-', SUCCEED, 'a-'),
   ('a[\\-b]', 'ab', SUCCEED, 'ab'),
   ('a[\\', '', SYNTAX_ERROR),
@@ -123,6 +140,7 @@ RE_TESTS = [
   ('a[^-b]c', 'a-c', FAIL),
   ('a[^]b]c', 'a]c', FAIL),
   ('a[^]b]c', 'adc', SUCCEED, 'adc'),
+  ('[^ab]*', 'cde', SUCCEED, 'cde'),
   (')(', '', SYNTAX_ERROR),
   (r'\n\r\t\f\a', '\n\r\t\f\a', SUCCEED, '\n\r\t\f\a'),
   (r'[\n][\r][\t][\f][\a]', '\n\r\t\f\a', SUCCEED, '\n\r\t\f\a'),
@@ -138,6 +156,38 @@ RE_TESTS = [
   ('\D+', '1234abc5678', SUCCEED, 'abc'),
   ('[\D]+', '1234abc5678', SUCCEED, 'abc'),
   ('[\da-fA-F]+', '123abc', SUCCEED, '123abc'),
+  ('^(ab|cd)e', 'abcde', FAIL),
+  ('(abc|)ef', 'abcdef', SUCCEED, 'ef'),
+  ('(abc|)ef', 'abcef', SUCCEED, 'abcef'),
+
+  # This is allowed in most regexp engines but in order to keep the
+  # grammar free of shift/reduce conflicts I've decided not supporting
+  # it. Users can use the (abc|) form instead.
+
+  ('(|abc)ef', '', SYNTAX_ERROR),
+
+  ('((a)(b)c)(d)', 'abcd', SUCCEED, 'abcd'),
+  ('(a|b)c*d', 'abcd', SUCCEED, 'bcd'),
+  ('(ab|ab*)bc', 'abc', SUCCEED, 'abc'),
+  ('a([bc]*)c*', 'abc', SUCCEED, 'abc'),
+  ('a([bc]*)c*', 'ac', SUCCEED, 'ac'),
+  ('a([bc]*)c*', 'a', SUCCEED, 'a'),
+  ('a([bc]*)(c*d)', 'abcd', SUCCEED, 'abcd'),
+  ('a([bc]+)(c*d)', 'abcd', SUCCEED, 'abcd'),
+  ('a([bc]*)(c+d)', 'abcd', SUCCEED, 'abcd'),
+  ('a[bcd]*dcdcde', 'adcdcde', SUCCEED, 'adcdcde'),
+  ('a[bcd]+dcdcde', 'adcdcde', FAIL),
+  (r'\((.*), (.*)\)', '(a, b)', SUCCEED, '(a, b)'),
+  ('abc|123$', 'abcx', SUCCEED, 'abc'),
+  ('abc|123$', '123x', FAIL),
+  ('abc|^123', '123', SUCCEED, '123'),
+  ('abc|^123', 'x123', FAIL),
+  ('^a(bc+|b[eh])g|.h$', 'abhg', SUCCEED, 'abhg'),
+  ('(bc+d$|ef*g.|h?i(j|k))', 'effgz', SUCCEED, 'effgz'),
+  ('(bc+d$|ef*g.|h?i(j|k))', 'ij', SUCCEED, 'ij'),
+  ('(bc+d$|ef*g.|h?i(j|k))', 'effg', FAIL),
+  ('(bc+d$|ef*g.|h?i(j|k))', 'bcdd', FAIL),
+  ('(bc+d$|ef*g.|h?i(j|k))', 'reffgz', SUCCEED, 'effgz'),
 
 ]
 
@@ -172,7 +222,10 @@ class TestYara(unittest.TestCase):
           if expected_result == SUCCEED:
             self.assertTrue(matches)
             _, _, matching_string = matches[0].strings[0]
-            self.assertTrue(matching_string == test[3])
+            if sys.version_info.major >= 3:
+              self.assertTrue(matching_string == bytes(test[3], 'utf-8'))
+            else:
+              self.assertTrue(matching_string == test[3])
           else:
             self.assertFalse(matches)
 
@@ -330,7 +383,8 @@ class TestYara(unittest.TestCase):
         self.assertTrueRules([
             'rule test { strings: $a = "ssi" $b = "mis" $c = "oops" condition: any of them }',
             'rule test { strings: $a = "ssi" $b = "mis" $c = "oops" condition: 1 of them }',
-            'rule test { strings: $a = "ssi" $b = "mis" $c = "oops" condition: 2 of them }'
+            'rule test { strings: $a = "ssi" $b = "mis" $c = "oops" condition: 2 of them }',
+            'rule test { strings: $a1 = "dummy1" $b1 = "dummy1" $b2 = "ssi" condition: any of ($a*, $b*) }',
         ], 'mississipi')
 
         self.assertFalseRules([
@@ -373,8 +427,8 @@ class TestYara(unittest.TestCase):
         for test in RE_TESTS:
             try:
                 self.runReTest(test)
-            except Exception, e:
-                print '\nFailed test: %s\n' % str(test)
+            except Exception as e:
+                print('\nFailed test: %s\n' % str(test))
                 raise e
 
     def testEntrypoint(self):

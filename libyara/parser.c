@@ -204,22 +204,19 @@ YR_STRING* yr_parser_reduce_string_declaration(
     const char* identifier,
     SIZED_STRING* str)
 {
-  int i;
-  int error_offset;
   int min_atom_length;
   char* file_name;
   char message[512];
 
   YR_STRING* string;
   YR_AC_MATCH* new_match;
-  ATOM_TREE* atom_tree;
   YR_ATOM_LIST_ITEM* atom;
   YR_ATOM_LIST_ITEM* atom_list = NULL;
   RE* re = NULL;
 
-  uint8_t* literal_string;
+  uint8_t* literal_string = NULL;
 
-  int literal_string_len;
+  int literal_string_len = 0;
   int max_string_len;
 
   YR_COMPILER* compiler = yyget_extra(yyscanner);
@@ -276,7 +273,7 @@ YR_STRING* yr_parser_reduce_string_declaration(
       snprintf(
           message,
           sizeof(message),
-          "invalid %s in string \"%s\": %s",
+          "invalid %s \"%s\": %s",
           (flags & STRING_GFLAGS_HEXADECIMAL) ?
               "hex string" : "regular expression",
           identifier,
@@ -286,12 +283,6 @@ YR_STRING* yr_parser_reduce_string_declaration(
       string = NULL;
       goto _exit;
     }
-
-    if (re->flags & RE_FLAGS_START_ANCHORED)
-      string->g_flags |= STRING_GFLAGS_START_ANCHORED;
-
-    if (re->flags & RE_FLAGS_END_ANCHORED)
-      string->g_flags |= STRING_GFLAGS_END_ANCHORED;
 
     if (re->flags & RE_FLAGS_FAST_HEX_REGEXP)
       string->g_flags |= STRING_GFLAGS_FAST_HEX_REGEXP;

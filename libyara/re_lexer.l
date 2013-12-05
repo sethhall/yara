@@ -54,29 +54,6 @@ hex_digit     [0-9a-fA-F]
 
 %%
 
-^\^ {
-
-  // If ^ was found just at the beginning of the regexp
-  // then we have an achored regexp.
-
-  RE* re = yyget_extra(yyscanner);
-  re->flags |= RE_FLAGS_START_ANCHORED;
-}
-
-
-\$ {
-
-  // In a perfect world we would be able to detect a trailing $
-  // by using \$$, just as we did with ^\^ for detecting the
-  // leading ^. However in the real world this doesn't work. We
-  // are forced to match every $ and take note of the position
-  // where it was seen for the last time. At the end of the regexp
-  // we verify if a $ was found just before the end.
-
-  LEX_ENV->last_dollar = yytext;
-}
-
-
 \{{digit}*,{digit}*\} {
 
   // Examples: {3,8} {0,5} {,5} {7,}
@@ -380,15 +357,6 @@ hex_digit     [0-9a-fA-F]
 
 <<EOF>> {
 
-  // If $ was found just before the end of the regexp
-  // then we have an achored regexp.
-
-  if (yytext == LEX_ENV->last_dollar + 1)
-  {
-    RE* re = yyget_extra(yyscanner);
-    re->flags |= RE_FLAGS_END_ANCHORED;
-  }
-
   yyterminate();
 }
 
@@ -437,6 +405,30 @@ uint8_t read_escaped_char(yyscan_t yyscanner)
 }
 
 
+
+#ifdef WIN32
+extern DWORD recovery_state_key;
+#else
+extern pthread_key_t recovery_state_key;
+#endif
+
+
+void yyfatal(
+    yyscan_t yyscanner,
+    const char *error_message)
+{
+  jmp_buf* recovery_state;
+
+  #ifdef WIN32
+  recovery_state = TlsGetValue(recovery_state_key) ;
+  #else
+  recovery_state = pthread_getspecific(recovery_state_key);
+  #endif
+
+  longjmp(*recovery_state, 1);
+}
+
+
 void yyerror(
     yyscan_t yyscanner,
     LEX_ENVIRONMENT* lex_env,
@@ -454,9 +446,9 @@ int yr_parse_re_string(
   RE** re)
 {
   yyscan_t yyscanner;
+  jmp_buf recovery_state;
   LEX_ENVIRONMENT lex_env;
 
-  lex_env.last_dollar = NULL;
   lex_env.last_error_message = NULL;
 
   FAIL_ON_ERROR(yr_re_create(re));
@@ -468,6 +460,15 @@ int yr_parse_re_string(
   // this flag which is unset later during parsing if necessary.
 
   (*re)->flags |= RE_FLAGS_LITERAL_STRING;
+
+  #ifdef WIN32
+  TlsSetValue(recovery_state_key, (LPVOID) &recovery_state);
+  #else
+  pthread_setspecific(recovery_state_key, (void*) &recovery_state);
+  #endif
+
+  if (setjmp(recovery_state) != 0)
+    return ERROR_INTERNAL_FATAL_ERROR;
 
   yylex_init(&yyscanner);
   yyset_extra(*re, yyscanner);
