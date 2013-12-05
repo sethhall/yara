@@ -695,24 +695,23 @@ void yr_arena_destroy(
     YR_ARENA* arena);
 
 
-
 int yr_incr_scan_init(
-    YARA_RULES* rules,
-    ARENA* matches_arena,
+    YR_RULES* rules,
+    YR_ARENA* matches_arena,
     int fast_scan_mode);
 
 
 int yr_incr_scan_add_block(
-    YARA_RULES* rules,
-    ARENA* matches_arena,
+    YR_RULES* rules,
+    YR_ARENA* matches_arena,
     const uint8_t* buffer,
     size_t buffer_size);
 
 
 int yr_incr_scan_finish(
-    YARA_RULES* rules,
-    ARENA* matches_arena,
-    YARACALLBACK callback,
+    YR_RULES* rules,
+    YR_ARENA* matches_arena,
+    YR_CALLBACK_FUNC callback,
     void* user_data);
 
 

@@ -781,11 +781,11 @@ void _yr_rules_clean_matches(
 }
 
 int yr_incr_scan_init(
-    YARA_RULES* rules,
-    ARENA* matches_arena,
+    YR_RULES* rules,
+    YR_ARENA* matches_arena,
     int fast_scan_mode)
 {
-  int result;
+  int result = ERROR_SUCCESS;
   int tidx; 
 
   tidx = yr_get_tidx();
@@ -809,15 +809,15 @@ int yr_incr_scan_init(
     yr_set_tidx(tidx);
   }
 
-  result = yr_arena_create(&matches_arena);
+  result = yr_arena_create(1024, 0, &matches_arena);
 
   //if (result != ERROR_SUCCESS)
   return result;
 }
 
 int yr_incr_scan_add_block(
-    YARA_RULES* rules,
-    ARENA* matches_arena,
+    YR_RULES* rules,
+    YR_ARENA* matches_arena,
     const uint8_t* buffer,
     size_t buffer_size)
 {
@@ -837,18 +837,19 @@ int yr_incr_scan_add_block(
 
 
 int yr_incr_scan_finish(
-    YARA_RULES* rules,
-    ARENA* matches_arena,
-    YARACALLBACK callback,
+    YR_RULES* rules,
+    YR_ARENA* matches_arena,
+    YR_CALLBACK_FUNC callback,
     void* user_data)
 {
-  RULE* rule;
+  YR_RULE* rule;
   EVALUATION_CONTEXT context;
 
   int result;
   int tidx = yr_get_tidx();
   int message;
 
+  // TODO: these need to be addressed correctly.
   context.file_size = 0;
   context.mem_block = NULL;
   context.entry_point = UNDEFINED;
@@ -864,7 +865,7 @@ int yr_incr_scan_finish(
   {
     if (RULE_IS_GLOBAL(rule) && !(rule->t_flags[tidx] & RULE_TFLAGS_MATCH))
     {
-      rule->namespc->t_flags[tidx] |= NAMESPACE_TFLAGS_UNSATISFIED_GLOBAL;
+      rule->ns->t_flags[tidx] |= NAMESPACE_TFLAGS_UNSATISFIED_GLOBAL;
     }
 
     rule++;
@@ -875,139 +876,7 @@ int yr_incr_scan_finish(
   while (!RULE_IS_NULL(rule))
   {
     if (rule->t_flags[tidx] & RULE_TFLAGS_MATCH &&
-        !(rule->namespc->t_flags[tidx] & NAMESPACE_TFLAGS_UNSATISFIED_GLOBAL))
-    {
-      message = CALLBACK_MSG_RULE_MATCHING;
-    }
-    else
-    {
-      message = CALLBACK_MSG_RULE_NOT_MATCHING;
-    }
-
-    if (!RULE_IS_PRIVATE(rule))
-    {
-      switch (callback(message, rule, user_data))
-      {
-        case CALLBACK_ABORT:
-          result = ERROR_SUCCESS;
-          goto _exit;
-
-        case CALLBACK_ERROR:
-          result = ERROR_CALLBACK_ERROR;
-          goto _exit;
-      }
-    }
-
-    rule++;
-  }
-
-  callback(CALLBACK_MSG_SCAN_FINISHED, NULL, user_data);
-
-_exit:
-  _yr_rules_clean_matches(rules);
-
-  if (matches_arena != NULL)
-    yr_arena_destroy(matches_arena);
-
-  return result;
-}
-
-int yr_incr_scan_init(
-    YARA_RULES* rules,
-    ARENA* matches_arena,
-    int fast_scan_mode)
-{
-  int result;
-  int tidx; 
-
-  tidx = yr_get_tidx();
-
-  if (tidx == -1) 
-  {
-    _yr_rules_lock(rules);
-
-    tidx = rules->threads_count;
-
-    if (tidx < MAX_THREADS)
-      rules->threads_count++;
-    else
-      result = ERROR_TOO_MANY_SCAN_THREADS;
-    
-    _yr_rules_unlock(rules);
-
-    if (result != ERROR_SUCCESS)
-      return result;
-
-    yr_set_tidx(tidx);
-  }
-
-  result = yr_arena_create(&matches_arena);
-
-  //if (result != ERROR_SUCCESS)
-  return result;
-}
-
-int yr_incr_scan_add_block(
-    YARA_RULES* rules,
-    ARENA* matches_arena,
-    const uint8_t* buffer,
-    size_t buffer_size)
-{
-  int result;
-
-  result = yr_rules_scan_mem_block(
-    rules,
-    buffer,
-    buffer_size,
-    0,     // fast_scan_mode
-    0,     // timeout
-    NULL,  // start_time
-    matches_arena);
-
-  return result;
-}
-
-
-int yr_incr_scan_finish(
-    YARA_RULES* rules,
-    ARENA* matches_arena,
-    YARACALLBACK callback,
-    void* user_data)
-{
-  RULE* rule;
-  EVALUATION_CONTEXT context;
-
-  int result;
-  int tidx = yr_get_tidx();
-  int message;
-
-  context.file_size = 0;
-  context.mem_block = NULL;
-  context.entry_point = UNDEFINED;
-
-  result = yr_execute_code(rules, &context);
-
-  if (result != ERROR_SUCCESS)
-    goto _exit;
-
-  rule = rules->rules_list_head;
-
-  while (!RULE_IS_NULL(rule))
-  {
-    if (RULE_IS_GLOBAL(rule) && !(rule->t_flags[tidx] & RULE_TFLAGS_MATCH))
-    {
-      rule->namespc->t_flags[tidx] |= NAMESPACE_TFLAGS_UNSATISFIED_GLOBAL;
-    }
-
-    rule++;
-  }
-
-  rule = rules->rules_list_head;
-
-  while (!RULE_IS_NULL(rule))
-  {
-    if (rule->t_flags[tidx] & RULE_TFLAGS_MATCH &&
-        !(rule->namespc->t_flags[tidx] & NAMESPACE_TFLAGS_UNSATISFIED_GLOBAL))
+        !(rule->ns->t_flags[tidx] & NAMESPACE_TFLAGS_UNSATISFIED_GLOBAL))
     {
       message = CALLBACK_MSG_RULE_MATCHING;
     }
