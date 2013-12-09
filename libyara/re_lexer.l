@@ -26,6 +26,12 @@ limitations under the License.
 #include "re_lexer.h"
 #include "utils.h"
 
+#include "config.h"
+
+#ifdef DMALLOC
+#include <dmalloc.h>
+#endif
+
 
 #ifdef WIN32
 #define snprintf _snprintf
@@ -187,6 +193,13 @@ hex_digit     [0-9a-fA-F]
 
 \\D {
   return _NON_DIGIT_;
+}
+
+
+\\{digit}+ {
+
+  yyerror(yyscanner, lex_env, "backreferences are not allowed");
+  yyterminate();
 }
 
 

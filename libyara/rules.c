@@ -741,9 +741,19 @@ int yr_rules_define_string_variable(
   {
     if (strcmp(external->identifier, identifier) == 0)
     {
+      if (external->type == EXTERNAL_VARIABLE_TYPE_MALLOC_STRING &&
+          external->string != NULL)
+      {
+        yr_free(external->string);
+      }
+
       external->type = EXTERNAL_VARIABLE_TYPE_MALLOC_STRING;
       external->string = yr_strdup(value);
-      break;
+
+      if (external->string == NULL)
+        return ERROR_INSUFICIENT_MEMORY;
+      else
+        return ERROR_SUCCESS;
     }
 
     external++;
