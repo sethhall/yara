@@ -810,8 +810,7 @@ int yr_incr_scan_init(
   }
 
   result = yr_arena_create(1024, 0, &matches_arena);
-
-  //if (result != ERROR_SUCCESS)
+  printf("was an arena created? %d\n", result);
   return result;
 }
 
@@ -1013,37 +1012,10 @@ int yr_rules_scan_mem_blocks(
   time_t start_time;
 
   int message;
-  int tidx;
   int result = ERROR_SUCCESS;
 
-  context.file_size = block->size;
-  context.mem_block = block;
-  context.entry_point = UNDEFINED;
-
-  tidx = yr_get_tidx();
-
-  if (tidx == -1)
-  {
-    _yr_rules_lock(rules);
-
-    tidx = rules->threads_count;
-
-    if (tidx < MAX_THREADS)
-      rules->threads_count++;
-    else
-      result = ERROR_TOO_MANY_SCAN_THREADS;
-
-    _yr_rules_unlock(rules);
-
-    if (result != ERROR_SUCCESS)
-      return result;
-
-    yr_set_tidx(tidx);
-  }
-
-  result = yr_arena_create(1024, 0, &matches_arena);
-
-  if (result != ERROR_SUCCESS)
+  result = yr_incr_scan_init(rules, matches_arena, fast_scan_mode);
+  if ( result != ERROR_SUCCESS ) 
     goto _exit;
 
   start_time = time(NULL);
@@ -1063,14 +1035,7 @@ int yr_rules_scan_mem_blocks(
             block->size);
     }
 
-    result = yr_rules_scan_mem_block(
-        rules,
-        block->data,
-        block->size,
-        fast_scan_mode,
-        timeout,
-        start_time,
-        matches_arena);
+    result = yr_incr_scan_add_block(rules, matches_arena, block->data, block->size);
 
     if (result != ERROR_SUCCESS)
       goto _exit;
@@ -1078,62 +1043,9 @@ int yr_rules_scan_mem_blocks(
     block = block->next;
   }
 
-  result = yr_execute_code(rules, &context);
-
-  if (result != ERROR_SUCCESS)
-    goto _exit;
-
-  rule = rules->rules_list_head;
-
-  while (!RULE_IS_NULL(rule))
-  {
-    if (RULE_IS_GLOBAL(rule) && !(rule->t_flags[tidx] & RULE_TFLAGS_MATCH))
-    {
-      rule->ns->t_flags[tidx] |= NAMESPACE_TFLAGS_UNSATISFIED_GLOBAL;
-    }
-
-    rule++;
-  }
-
-  rule = rules->rules_list_head;
-
-  while (!RULE_IS_NULL(rule))
-  {
-    if (rule->t_flags[tidx] & RULE_TFLAGS_MATCH &&
-        !(rule->ns->t_flags[tidx] & NAMESPACE_TFLAGS_UNSATISFIED_GLOBAL))
-    {
-      message = CALLBACK_MSG_RULE_MATCHING;
-    }
-    else
-    {
-      message = CALLBACK_MSG_RULE_NOT_MATCHING;
-    }
-
-    if (!RULE_IS_PRIVATE(rule))
-    {
-      switch (callback(message, rule, user_data))
-      {
-        case CALLBACK_ABORT:
-          result = ERROR_SUCCESS;
-          goto _exit;
-
-        case CALLBACK_ERROR:
-          result = ERROR_CALLBACK_ERROR;
-          goto _exit;
-      }
-    }
-
-    rule++;
-  }
-
-  callback(CALLBACK_MSG_SCAN_FINISHED, NULL, user_data);
+  result = yr_incr_scan_finish(rules, matches_arena, callback, user_data);
 
 _exit:
-  _yr_rules_clean_matches(rules);
-
-  if (matches_arena != NULL)
-    yr_arena_destroy(matches_arena);
-
   return result;
 }
 
