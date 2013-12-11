@@ -577,6 +577,9 @@ typedef struct _YR_RULES {
 } YR_RULES;
 
 
+typedef struct _YR_CONTEXT YR_CONTEXT;
+
+
 extern char lowercase[256];
 extern char altercase[256];
 
@@ -685,34 +688,31 @@ int yr_rules_scan_proc(
     int timeout);
 
 
-int yr_arena_create(
-    int initial_size,
-    int flags,
-    YR_ARENA** arena);
-
-
-void yr_arena_destroy(
-    YR_ARENA* arena);
-
-
 int yr_incr_scan_init(
+    YR_CONTEXT** context,
     YR_RULES* rules,
-    YR_ARENA* matches_arena,
-    int fast_scan_mode);
+    int fast_scan_mode,
+    YR_CALLBACK_FUNC callback,
+    void* user_data);
+
+
+int yr_incr_scan_add_block_with_base(
+    YR_CONTEXT* context,
+    const uint8_t* buffer,
+    size_t buffer_size,
+    int buffer_base,
+    int scanning_process_memory);
 
 
 int yr_incr_scan_add_block(
-    YR_RULES* rules,
-    YR_ARENA* matches_arena,
+    YR_CONTEXT* context,
     const uint8_t* buffer,
     size_t buffer_size);
 
 
 int yr_incr_scan_finish(
-    YR_RULES* rules,
-    YR_ARENA* matches_arena,
-    YR_CALLBACK_FUNC callback,
-    void* user_data);
+    YR_CONTEXT* context
+    );
 
 
 int yr_rules_save(

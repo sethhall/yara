@@ -122,7 +122,7 @@ struct RE {
 
 
 typedef void RE_MATCH_CALLBACK_FUNC(
-    uint8_t* match,
+    const uint8_t* match,
     int match_length,
     int flags,
     void* args);
@@ -172,7 +172,7 @@ int yr_re_emit_code(
 
 int yr_re_exec(
     uint8_t* code,
-    uint8_t* input,
+    const uint8_t* input,
     size_t input_size,
     int flags,
     RE_MATCH_CALLBACK_FUNC callback,

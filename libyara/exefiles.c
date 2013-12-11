@@ -36,7 +36,7 @@ limitations under the License.
 
 
 PIMAGE_NT_HEADERS yr_get_pe_header(
-    uint8_t* buffer,
+    const uint8_t* buffer,
     size_t buffer_length)
 {
   PIMAGE_DOS_HEADER mz_header;
@@ -114,7 +114,7 @@ uint64_t yr_pe_rva_to_offset(
 
 
 int yr_get_elf_type(
-    uint8_t* buffer,
+    const uint8_t* buffer,
     size_t buffer_length)
 {
   elf_ident_t* elf_ident;
@@ -218,7 +218,7 @@ uint64_t yr_elf_rva_to_offset_64(
 
 
 uint64_t yr_get_entry_point_offset(
-    uint8_t* buffer,
+    const uint8_t* buffer,
     size_t buffer_length)
 {
   PIMAGE_NT_HEADERS pe_header;
@@ -257,7 +257,7 @@ uint64_t yr_get_entry_point_offset(
 
 
 uint64_t yr_get_entry_point_address(
-    uint8_t* buffer,
+    const uint8_t* buffer,
     size_t buffer_length,
     size_t base_address)
 {

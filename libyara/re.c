@@ -1030,14 +1030,14 @@ void _yr_re_fiber_kill_tail(
 
 int yr_re_exec(
     uint8_t* code,
-    uint8_t* input_data,
+    const uint8_t* input_data,
     size_t input_size,
     int flags,
     RE_MATCH_CALLBACK_FUNC callback,
     void* callback_args)
 {
   uint8_t* ip;
-  uint8_t* input;
+  const uint8_t* input;
   uint8_t mask;
   uint8_t value;
 
