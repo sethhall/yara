@@ -171,21 +171,19 @@ int main(
   YR_RULES* rules;
   FILE* rule_file;
 
-  clock_t start, end;
-
   yr_initialize();
 
   if (yr_compiler_create(&compiler) != ERROR_SUCCESS)
   {
     yr_finalize();
-    return 0;
+    return EXIT_FAILURE;
   }
 
   if (!process_cmd_line(compiler, argc, argv))
   {
     yr_compiler_destroy(compiler);
     yr_finalize();
-    return 0;
+    return EXIT_FAILURE;
   }
 
   if (argc == 1 || optind == argc)
@@ -193,12 +191,10 @@ int main(
     show_help();
     yr_compiler_destroy(compiler);
     yr_finalize();
-    return 0;
+    return EXIT_FAILURE;
   }
 
   compiler->error_report_function = report_error;
-
-  start = clock();
 
   for (i = optind; i < argc - 1; i++)
   {
@@ -216,7 +212,7 @@ int main(
       {
         yr_compiler_destroy(compiler);
         yr_finalize();
-        return 0;
+        return EXIT_FAILURE;
       }
     }
     else
@@ -227,10 +223,6 @@ int main(
 
   yr_compiler_get_rules(compiler, &rules);
 
-  end = clock();
-
-  printf( "Compiling time: %f s\n", (float)(end - start) / CLOCKS_PER_SEC);
-
   yr_rules_save(rules, argv[argc - 1]);
 
   yr_rules_destroy(rules);
@@ -238,6 +230,6 @@ int main(
 
   yr_finalize();
 
-  return 1;
+  return EXIT_SUCCESS;
 }
 
