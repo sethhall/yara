@@ -796,6 +796,7 @@ struct _YR_CONTEXT {
   time_t start_time;
   YR_ARENA* matches_arena;
   int fast_scan_mode;
+  int timeout;
   YR_CALLBACK_FUNC callback;
   void* user_data;
 };
@@ -895,7 +896,7 @@ int yr_rules_scan_mem_blocks(
   int result = ERROR_SUCCESS;
 
   YR_CONTEXT *context = NULL;
-  result = yr_incr_scan_init(&context, rules, fast_scan_mode, callback, user_data);
+  result = yr_incr_scan_init(&context, rules, fast_scan_mode, timeout, callback, user_data);
   if ( result != ERROR_SUCCESS )
     goto _exit;
 
@@ -921,6 +922,7 @@ int yr_incr_scan_init(
     YR_CONTEXT** context,
     YR_RULES* rules,
     int fast_scan_mode,
+    int timeout,
     YR_CALLBACK_FUNC callback,
     void* user_data)
 {
@@ -928,8 +930,8 @@ int yr_incr_scan_init(
   int tidx;
   YR_CONTEXT *new_context;
   *context = NULL;
-
   EVALUATION_CONTEXT eval_context;
+  
   eval_context.file_size = 0;
   eval_context.mem_block = NULL;
   eval_context.entry_point = UNDEFINED;
@@ -938,6 +940,8 @@ int yr_incr_scan_init(
   new_context->eval_context = eval_context;
   new_context->start_time = time(NULL);
   new_context->rules = rules;
+  new_context->fast_scan_mode = fast_scan_mode;
+  new_context->timeout = timeout;
   new_context->callback = callback;
   new_context->user_data = user_data;
 
@@ -987,19 +991,14 @@ int yr_incr_scan_add_block_with_base(
       context->eval_context.entry_point = yr_get_entry_point_offset(
           buffer,
           buffer_size);
-
-    if (!scanning_process_memory) // incremental scan for PE files in memory doesn't work now.
-      context->eval_context.entry_point = yr_get_entry_point_offset(
-          buffer,
-          buffer_size);
   }
 
   result = yr_rules_scan_mem_block(
     context->rules,
     buffer,
     buffer_size,
-    context->fast_scan_mode, 
-    0, // timeout
+    context->fast_scan_mode,
+    context->timeout,
     context->start_time,
     context->matches_arena);
 
