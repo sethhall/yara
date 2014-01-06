@@ -692,6 +692,7 @@ int yr_incr_scan_init(
     YR_CONTEXT** context,
     YR_RULES* rules,
     int fast_scan_mode,
+    int timeout,
     YR_CALLBACK_FUNC callback,
     void* user_data);
 

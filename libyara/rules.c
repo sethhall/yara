@@ -931,7 +931,7 @@ int yr_incr_scan_init(
   YR_CONTEXT *new_context;
   *context = NULL;
   EVALUATION_CONTEXT eval_context;
-  
+
   eval_context.file_size = 0;
   eval_context.mem_block = NULL;
   eval_context.entry_point = UNDEFINED;
