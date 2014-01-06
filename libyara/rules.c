@@ -300,19 +300,250 @@ int _yr_scan_fast_hex_re_exec(
   return -1;
 }
 
-void match_callback(
+
+void _yr_scan_update_match_chain_length(
+    int tidx,
+    YR_STRING* string,
+    YR_MATCH* match_to_update,
+    int chain_length)
+{
+  YR_MATCH* match;
+  size_t ending_offset;
+
+  match_to_update->chain_length = chain_length;
+
+  if (string->chained_to != NULL)
+    match = string->chained_to->unconfirmed_matches[tidx].head;
+  else
+    match = NULL;
+
+  while (match != NULL)
+  {
+    ending_offset = match->offset + match->length;
+
+    if (ending_offset + string->chain_gap_max >= match_to_update->offset &&
+        ending_offset + string->chain_gap_min <= match_to_update->offset)
+    {
+      _yr_scan_update_match_chain_length(
+          tidx, string->chained_to, match, chain_length + 1);
+    }
+
+    match = match->next;
+  }
+}
+
+
+void _yr_scan_add_match_to_list(
+    YR_MATCH* match,
+    YR_MATCHES* matches_list)
+{
+  YR_MATCH* insertion_point = matches_list->tail;
+
+  while (insertion_point != NULL)
+  {
+    if (match->offset == insertion_point->offset)
+    {
+      insertion_point->length = match->length;
+      return;
+    }
+
+    if (match->offset > insertion_point->offset)
+      break;
+
+    insertion_point = insertion_point->prev;
+  }
+
+  match->prev = insertion_point;
+
+  if (insertion_point != NULL)
+  {
+    match->next = insertion_point->next;
+    insertion_point->next = match;
+  }
+  else
+  {
+    match->next = matches_list->head;
+    matches_list->head = match;
+  }
+
+  if (match->next != NULL)
+    match->next->prev = match;
+  else
+    matches_list->tail = match;
+}
+
+
+void _yr_scan_remove_match_from_list(
+    YR_MATCH* match,
+    YR_MATCHES* matches_list)
+{
+  if (match->prev != NULL)
+    match->prev->next = match->next;
+
+  if (match->next != NULL)
+    match->next->prev = match->prev;
+
+  if (matches_list->head == match)
+    matches_list->head = match->next;
+
+  if (matches_list->tail == match)
+    matches_list->tail = match->prev;
+
+  match->next = NULL;
+  match->prev = NULL;
+}
+
+
+int _yr_scan_verify_chained_string_match(
+    YR_ARENA* matches_arena,
+    YR_STRING* matching_string,
     const uint8_t* match_data,
-    int match_length,
+    size_t match_offset,
+    int32_t match_length,
+    int tidx)
+{
+  YR_STRING* string;
+  YR_MATCH* match;
+  YR_MATCH* next_match;
+  YR_MATCH* new_match;
+
+  size_t lower_offset;
+  size_t ending_offset;
+  int32_t full_chain_length;
+
+  int add_match = FALSE;
+  int result;
+
+  if (matching_string->chained_to == NULL)
+  {
+    add_match = TRUE;
+  }
+  else
+  {
+    if (matching_string->unconfirmed_matches[tidx].head != NULL)
+      lower_offset = matching_string->unconfirmed_matches[tidx].head->offset;
+    else
+      lower_offset = match_offset;
+
+    match = matching_string->chained_to->unconfirmed_matches[tidx].head;
+
+    while (match != NULL)
+    {
+      next_match = match->next;
+      ending_offset = match->offset + match->length;
+
+      if (ending_offset + matching_string->chain_gap_max < lower_offset)
+      {
+        _yr_scan_remove_match_from_list(
+            match, &matching_string->chained_to->unconfirmed_matches[tidx]);
+      }
+      else
+      {
+        if (ending_offset + matching_string->chain_gap_max >= match_offset &&
+            ending_offset + matching_string->chain_gap_min <= match_offset)
+        {
+          add_match = TRUE;
+          break;
+        }
+      }
+
+      match = next_match;
+    }
+  }
+
+  if (add_match)
+  {
+    if (STRING_IS_CHAIN_TAIL(matching_string))
+    {
+      match = matching_string->chained_to->unconfirmed_matches[tidx].head;
+
+      while (match != NULL)
+      {
+        ending_offset = match->offset + match->length;
+
+        if (ending_offset + matching_string->chain_gap_max >= match_offset &&
+            ending_offset + matching_string->chain_gap_min <= match_offset)
+        {
+          _yr_scan_update_match_chain_length(
+              tidx, matching_string->chained_to, match, 1);
+        }
+
+        match = match->next;
+      }
+
+      full_chain_length = 0;
+      string = matching_string;
+
+      while(string->chained_to != NULL)
+      {
+        full_chain_length++;
+        string = string->chained_to;
+      }
+
+      // "string" points now to the head of the strings chain
+
+      match = string->unconfirmed_matches[tidx].head;
+
+      while (match != NULL)
+      {
+        next_match = match->next;
+
+        if (match->chain_length == full_chain_length)
+        {
+          _yr_scan_remove_match_from_list(
+              match, &string->unconfirmed_matches[tidx]);
+
+          match->length = match_offset - match->offset + match_length;
+          match->data = match_data - match_offset + match->offset;
+          match->prev = NULL;
+          match->next = NULL;
+
+          _yr_scan_add_match_to_list(
+              match, &string->matches[tidx]);
+        }
+
+        match = next_match;
+      }
+    }
+    else
+    {
+      result = yr_arena_allocate_memory(
+          matches_arena,
+          sizeof(YR_MATCH),
+          (void**) &new_match);
+
+      if (result != ERROR_SUCCESS)
+        return result;
+
+      new_match->offset = match_offset;
+      new_match->length = match_length;
+      new_match->data = match_data;
+      new_match->prev = NULL;
+      new_match->next = NULL;
+
+      _yr_scan_add_match_to_list(
+          new_match,
+          &matching_string->unconfirmed_matches[tidx]);
+    }
+  }
+
+  return ERROR_SUCCESS;
+}
+
+
+int _yr_scan_match_callback(
+    const uint8_t* match_data,
+    int32_t match_length,
     int flags,
     void* args)
 {
-  YR_MATCH* new_match;
-  YR_MATCH* match;
-
   CALLBACK_ARGS* callback_args = args;
+
   YR_STRING* string = callback_args->string;
+  YR_MATCH* new_match;
 
   int character_size;
+  int result = ERROR_SUCCESS;
   int tidx = callback_args->tidx;
 
   size_t match_offset = match_data - callback_args->data;
@@ -330,6 +561,7 @@ void match_callback(
     match_length -= character_size;
 
   // total match length is the sum of backward and forward matches.
+
   match_length = match_length + callback_args->forward_matches;
 
   if (callback_args->full_word)
@@ -339,90 +571,58 @@ void match_callback(
       if (match_offset >= 2 &&
           *(match_data - 1) == 0 &&
           isalnum(*(match_data - 2)))
-        return;
+        return ERROR_SUCCESS;
 
       if (match_offset + match_length + 1 < callback_args->data_size &&
           *(match_data + match_length + 1) == 0 &&
           isalnum(*(match_data + match_length)))
-        return;
+        return ERROR_SUCCESS;
     }
     else
     {
       if (match_offset >= 1 &&
           isalnum(*(match_data - 1)))
-        return;
+        return ERROR_SUCCESS;
 
       if (match_offset + match_length < callback_args->data_size &&
           isalnum(*(match_data + match_length)))
-        return;
+        return ERROR_SUCCESS;
     }
   }
 
-  match = string->matches[tidx].tail;
-
-  while (match != NULL)
+  if (STRING_IS_CHAIN_PART(string))
   {
-    if (match_length == match->length)
+    result = _yr_scan_verify_chained_string_match(
+        callback_args->matches_arena,
+        string,
+        match_data,
+        match_offset,
+        match_length,
+        tidx);
+  }
+  else
+  {
+    result = yr_arena_allocate_memory(
+        callback_args->matches_arena,
+        sizeof(YR_MATCH),
+        (void**) &new_match);
+
+    if (result == ERROR_SUCCESS)
     {
-      if (match_offset >= match->first_offset &&
-          match_offset <= match->last_offset)
-      {
-        return;
-      }
+      new_match->offset = match_offset;
+      new_match->length = match_length;
+      new_match->data = match_data;
+      new_match->prev = NULL;
+      new_match->next = NULL;
 
-      if (match_offset == match->last_offset + 1)
-      {
-        match->last_offset++;
-        return;
-      }
-
-      if (match_offset == match->first_offset - 1)
-      {
-        match->first_offset--;
-        return;
-      }
+      _yr_scan_add_match_to_list(
+          new_match,
+          &string->matches[tidx]);
     }
-
-    if (match_offset > match->last_offset)
-      break;
-
-    match = match->prev;
   }
 
-  yr_arena_allocate_memory(
-      callback_args->matches_arena,
-      sizeof(YR_MATCH),
-      (void**) &new_match);
-
-  new_match->first_offset = match_offset;
-  new_match->last_offset = match_offset;
-  new_match->length = match_length;
-
-  if (match != NULL)
-  {
-    new_match->next = match->next;
-    match->next = new_match;
-  }
-  else
-  {
-    new_match->next = string->matches[tidx].head;
-    string->matches[tidx].head = new_match;
-  }
-
-  if (new_match->next != NULL)
-    new_match->next->prev = new_match;
-  else
-    string->matches[tidx].tail = new_match;
-
-  new_match->prev = match;
-  //TODO: handle errors
-  yr_arena_write_data(
-      callback_args->matches_arena,
-      match_data,
-      match_length,
-      (void**) &new_match->data);
+  return result;
 }
-
 
 
 typedef int (*RE_EXEC_FUNC)(
@@ -503,12 +703,12 @@ int _yr_scan_verify_re_match(
         data + offset,
         offset + 1,
         flags | RE_FLAGS_BACKWARDS | RE_FLAGS_EXHAUSTIVE,
-        match_callback,
+        _yr_scan_match_callback,
         (void*) &callback_args);
   }
   else
   {
-    match_callback(
+    _yr_scan_match_callback(
         data + offset, 0, flags, &callback_args);
   }
 
@@ -617,7 +817,7 @@ int _yr_scan_verify_literal_match(
     callback_args.full_word = STRING_IS_FULL_WORD(string);
     callback_args.tidx = yr_get_tidx();
 
-    match_callback(
+    _yr_scan_match_callback(
         data + offset, 0, flags, &callback_args);
   }
 
@@ -783,6 +983,8 @@ void _yr_rules_clean_matches(
     {
       string->matches[tidx].head = NULL;
       string->matches[tidx].tail = NULL;
+      string->unconfirmed_matches[tidx].head = NULL;
+      string->unconfirmed_matches[tidx].tail = NULL;
       string++;
     }
 
@@ -1226,8 +1428,14 @@ int yr_rules_load(
 
   #if WIN32
   new_rules->mutex = CreateMutex(NULL, FALSE, NULL);
+
+  if (new_rules->mutex == NULL)
+    return ERROR_INTERNAL_FATAL_ERROR;
   #else
-  pthread_mutex_init(&new_rules->mutex, NULL);
+  result = pthread_mutex_init(&new_rules->mutex, NULL);
+
+  if (result != 0)
+    return ERROR_INTERNAL_FATAL_ERROR;
   #endif
 
   rule = new_rules->rules_list_head;

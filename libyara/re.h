@@ -18,6 +18,7 @@ limitations under the License.
 #define _RE_H
 
 #include "yara.h"
+#include "sizedstr.h"
 
 #define RE_NODE_LITERAL             1
 #define RE_NODE_MASKED_LITERAL      2
@@ -61,7 +62,7 @@ limitations under the License.
 #define RE_OPCODE_JNZ               0xB4
 #define RE_OPCODE_JUMP              0xB5
 
-#define RE_FLAGS_LITERAL_STRING           0x01
+
 #define RE_FLAGS_FAST_HEX_REGEXP          0x02
 #define RE_FLAGS_BACKWARDS                0x04
 #define RE_FLAGS_EXHAUSTIVE               0x08
@@ -113,15 +114,10 @@ struct RE {
 
   const char* error_message;
   int error_code;
-
-  uint8_t* literal_string;
-
-  int literal_string_len;
-  int literal_string_max;
 };
 
 
-typedef void RE_MATCH_CALLBACK_FUNC(
+typedef int RE_MATCH_CALLBACK_FUNC(
     const uint8_t* match,
     int match_length,
     int flags,
@@ -166,9 +162,22 @@ void yr_re_node_destroy(
   RE_NODE* node);
 
 
+SIZED_STRING* yr_re_extract_literal(
+    RE* re);
+
+
+int yr_re_split_at_chaining_point(
+    RE* re,
+    RE** result_re,
+    RE** remainder_re,
+    int32_t* min_gap,
+    int32_t* max_gap);
+
+
 int yr_re_emit_code(
     RE* re,
     YR_ARENA* arena);
+
 
 int yr_re_exec(
     uint8_t* code,
@@ -178,9 +187,12 @@ int yr_re_exec(
     RE_MATCH_CALLBACK_FUNC callback,
     void* callback_args);
 
+
 int yr_re_initialize();
 
+
 int yr_re_finalize();
+
 
 int yr_re_finalize_thread();
 

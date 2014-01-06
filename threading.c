@@ -16,16 +16,24 @@ limitations under the License.
 
 #include <fcntl.h>
 
+#ifndef WIN32
+#include <errno.h>
+#endif
+
 #include "threading.h"
 
 
-void mutex_init(
+int mutex_init(
     MUTEX* mutex)
 {
   #ifdef WIN32
   *mutex = CreateMutex(NULL, FALSE, NULL);
+  if (*mutex == NULL)
+    return GetLastError();
+  else
+    return 0;
   #else
-  pthread_mutex_init(mutex, NULL);
+  return pthread_mutex_init(mutex, NULL);
   #endif
 }
 
@@ -62,20 +70,29 @@ void mutex_unlock(
 }
 
 
-void semaphore_init(
-    SEMAPHORE* semaphore, 
+int semaphore_init(
+    SEMAPHORE* semaphore,
     int value)
 {
   #ifdef WIN32
   *semaphore = CreateSemaphore(NULL, value, 65535, NULL);
+  if (*semaphore == NULL)
+    return GetLastError();
+  else
+    return 0;
   #else
   // Mac OS X doesn't support unnamed semaphores via sem_init, that's why
   // we use sem_open instead sem_init and immediately unlink the semaphore
   // from the name. More info at:
-  // 
+  //
   // http://stackoverflow.com/questions/1413785/sem-init-on-os-x
   *semaphore = sem_open("/semaphore", O_CREAT, S_IRUSR, value);
-  sem_unlink("/semaphore");
+  if (*semaphore == SEM_FAILED)
+    return errno;
+  else
+    return 0;
+  if (sem_unlink("/semaphore") != 0)
+    return errno;
   #endif
 }
 
@@ -114,17 +131,19 @@ void semaphore_release(
 
 
 int create_thread(
-    THREAD* thread, 
+    THREAD* thread,
     THREAD_START_ROUTINE start_routine,
     void* param)
 {
   #ifdef WIN32
   *thread = CreateThread(NULL, 0, start_routine, param, 0, NULL);
+  if (*thread == NULL)
+    return GetLastError();
+  else
+    return 0;
   #else
-  pthread_create(thread, NULL, start_routine, param);
+  return pthread_create(thread, NULL, start_routine, param);
   #endif
-
-  return 0;
 }
 
 

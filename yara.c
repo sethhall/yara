@@ -72,6 +72,10 @@ limitations under the License.
 #define MAX_PATH 255
 #endif
 
+#ifndef min
+#define min(x, y)  ((x < y) ? (x) : (y))
+#endif
+
 #ifdef _MSC_VER
 #define snprintf _snprintf
 #define strdup _strdup
@@ -155,14 +159,24 @@ MUTEX queue_mutex;
 MUTEX output_mutex;
 
 
-void file_queue_init()
+int file_queue_init()
 {
+  int result;
+
   queue_tail = 0;
   queue_head = 0;
 
-  mutex_init(&queue_mutex);
-  semaphore_init(&used_slots, 0);
-  semaphore_init(&unused_slots, MAX_QUEUED_FILES);
+  result = mutex_init(&queue_mutex);
+
+  if (result != 0)
+    return result;
+
+  result = semaphore_init(&used_slots, 0);
+
+  if (result != 0)
+    return result;
+
+ return semaphore_init(&unused_slots, MAX_QUEUED_FILES);
 }
 
 
@@ -331,7 +345,7 @@ void scan_dir(
 #endif
 
 void print_string(
-    uint8_t* data,
+    const uint8_t* data,
     int length)
 {
   int i;
@@ -351,19 +365,22 @@ void print_string(
 }
 
 void print_hex_string(
-    uint8_t* data,
+    const uint8_t* data,
     int length)
 {
   int i;
 
-  for (i = 0; i < length; i++)
+  for (i = 0; i < min(32, length); i++)
     printf("%02X ", (uint8_t) data[i]);
+
+  if (length > 32)
+    printf("...");
 
   printf("\n");
 }
 
 
-void print_scanning_error(int error)
+void print_scanner_error(int error)
 {
   switch (error)
   {
@@ -545,16 +562,12 @@ int handle_message(int message, YR_RULE* rule, void* data)
 
           while (match != NULL)
           {
-            printf("0x%" PRIx64 ":%s: ", match->first_offset, string->identifier);
+            printf("0x%" PRIx64 ":%s: ", match->offset, string->identifier);
 
             if (STRING_IS_HEX(string))
-            {
               print_hex_string(match->data, match->length);
-            }
             else
-            {
               print_string(match->data, match->length);
-            }
 
             match = match->next;
           }
@@ -615,7 +628,7 @@ void* scanning_thread(void* param)
     {
       mutex_lock(&output_mutex);
       fprintf(stderr, "Error scanning %s: ", file_path);
-      print_scanning_error(result);
+      print_scanner_error(result);
       mutex_unlock(&output_mutex);
     }
 
@@ -877,10 +890,10 @@ int main(
 
   result = yr_rules_load(argv[optind], &rules);
 
-  if (result == ERROR_UNSUPPORTED_FILE_VERSION ||
-      result == ERROR_CORRUPT_FILE)
+  if (result != ERROR_SUCCESS &&
+      result != ERROR_INVALID_FILE)
   {
-    print_scanning_error(result);
+    print_scanner_error(result);
     yr_finalize();
     cleanup();
     return EXIT_FAILURE;
@@ -960,29 +973,35 @@ int main(
     compiler->error_report_function = print_compiler_error;
     rule_file = fopen(argv[optind], "r");
 
-    if (rule_file != NULL)
-    {
-      yr_compiler_push_file_name(compiler, argv[optind]);
-
-      errors = yr_compiler_add_file(compiler, rule_file, NULL);
-
-      fclose(rule_file);
-
-      if (errors == 0)
-        yr_compiler_get_rules(compiler, &rules);
-
-      yr_compiler_destroy(compiler);
-
-      if (errors > 0)
-      {
-        yr_finalize();
-        cleanup();
-        return EXIT_FAILURE;
-      }
-    }
-    else
+    if (rule_file == NULL)
     {
       fprintf(stderr, "could not open file: %s\n", argv[optind]);
+      yr_compiler_destroy(compiler);
+      yr_finalize();
+      cleanup();
+      return EXIT_FAILURE;
+    }
+
+    yr_compiler_push_file_name(compiler, argv[optind]);
+
+    errors = yr_compiler_add_file(compiler, rule_file, NULL);
+
+    fclose(rule_file);
+
+    if (errors > 0)
+    {
+      yr_compiler_destroy(compiler);
+      yr_finalize();
+      cleanup();
+      return EXIT_FAILURE;
+    }
+
+    result = yr_compiler_get_rules(compiler, &rules);
+
+    yr_compiler_destroy(compiler);
+
+    if (result != ERROR_SUCCESS)
+    {
       yr_finalize();
       cleanup();
       return EXIT_FAILURE;
@@ -1003,16 +1022,20 @@ int main(
         timeout);
 
     if (result != ERROR_SUCCESS)
-      print_scanning_error(result);
+      print_scanner_error(result);
   }
   else if (is_directory(argv[argc - 1]))
   {
-    file_queue_init();
+    if (file_queue_init() != 0)
+      print_scanner_error(ERROR_INTERNAL_FATAL_ERROR);
 
     for (i = 0; i < threads; i++)
     {
       if (create_thread(&thread[i], scanning_thread, (void*) rules) != 0)
-        return ERROR_COULD_NOT_CREATE_THREAD;
+      {
+        print_scanner_error(ERROR_COULD_NOT_CREATE_THREAD);
+        return EXIT_FAILURE;
+      }
     }
 
     scan_dir(
@@ -1042,7 +1065,7 @@ int main(
     if (result != ERROR_SUCCESS)
     {
       fprintf(stderr, "Error scanning %s: ", argv[argc - 1]);
-      print_scanning_error(result);
+      print_scanner_error(result);
     }
   }
 
