@@ -37,16 +37,6 @@ limitations under the License.
 #include <yara/modules.h>
 
 
-typedef struct _CALLBACK_ARGS
-{
-  YR_STRING* string;
-  YR_ARENA* matches_arena;
-  int forward_matches;
-  const uint8_t* data;
-  int data_size;
-  int full_word;
-  int tidx;
-} CALLBACK_ARGS;
 
 void _yr_rules_lock(
     YR_RULES* rules)
@@ -184,16 +174,6 @@ void _yr_rules_clean_matches(
   }
 }
 
-struct _YR_CONTEXT {
-  YR_RULES* rules;
-  EVALUATION_CONTEXT eval_context;
-  time_t start_time;
-  YR_ARENA* matches_arena;
-  int fast_scan_mode;
-  int timeout;
-  YR_CALLBACK_FUNC callback;
-  void* user_data;
-};
 
 #ifdef PROFILING_ENABLED
 void yr_rules_print_profiling_info(
@@ -234,12 +214,9 @@ void yr_rules_print_profiling_info(
 
 
 int yr_rules_scan_mem_block(
+    YR_SCAN_CONTEXT* context,
     YR_RULES* rules,
-    YR_MEMORY_BLOCK* block,
-    int flags,
-    int timeout,
-    time_t start_time,
-    YR_ARENA* matches_arena)
+    YR_MEMORY_BLOCK* block)
 {
   YR_AC_STATE* next_state;
   YR_AC_MATCH* ac_match;
@@ -247,7 +224,7 @@ int yr_rules_scan_mem_block(
 
   size_t i;
 
-  current_state = rules->automaton->root;
+  current_state = context->rules->automaton->root;
   i = 0;
 
   while (i < block->size)
@@ -264,8 +241,8 @@ int yr_rules_scan_mem_block(
             block->size,
             block->base,
             i - ac_match->backtrack,
-            matches_arena,
-            flags));
+            context->matches_arena,
+            context->flags));
       }
 
       ac_match = ac_match->next;
@@ -284,9 +261,9 @@ int yr_rules_scan_mem_block(
 
     i++;
 
-    if (timeout > 0 && i % 256 == 0)
+    if (context->timeout > 0 && i % 256 == 0)
     {
-      if (difftime(time(NULL), start_time) > timeout)
+      if (difftime(time(NULL), context->start_time) > context->timeout)
         return ERROR_SCAN_TIMEOUT;
     }
   }
@@ -303,8 +280,8 @@ int yr_rules_scan_mem_block(
           block->size,
           block->base,
           block->size - ac_match->backtrack,
-          matches_arena,
-          flags));
+          context->matches_arena,
+          context->flags));
     }
 
     ac_match = ac_match->next;
@@ -323,88 +300,82 @@ int yr_rules_scan_mem_blocks(
     int timeout)
 {
   YR_SCAN_CONTEXT context;
-  YR_RULE* rule;
-  YR_OBJECT* object;
-  YR_EXTERNAL_VARIABLE* external;
-  YR_ARENA* matches_arena = NULL;
+  int result = ERROR_SUCCESS;
+  int tidx = 0;
 
-  YR_CONTEXT *context = NULL;
-  result = yr_incr_scan_init(&context, rules, fast_scan_mode, timeout, callback, user_data);
-  if ( result != ERROR_SUCCESS )
-    goto _exit;
+  if (block == NULL)
+    return ERROR_SUCCESS;
+
+  result = yr_incr_scan_init(&context, rules, flags, timeout, callback, user_data);
+  
+  context.mem_block = block;
+  context.file_size = block->size;
+
+  tidx = yr_get_tidx();
 
   while (block != NULL)
   {
-    result = yr_incr_scan_add_block(context, block->data, block->size);
-
+    result = yr_incr_scan_add_block(&context, block);
     if (result != ERROR_SUCCESS)
       goto _exit;
 
     block = block->next;
   }
 
-  time_t start_time;
-  tidx_mask_t bit;
-
-  int message;
-  int tidx = 0;
-  int result = ERROR_SUCCESS;
-
-  //if (block == NULL)
-  //  return ERROR_SUCCESS;
-
-  //context.flags = flags;
-  //context.callback = callback;
-  //context.user_data = user_data;
-  //context.file_size = block->size;
-  //context.mem_block = block;
-  //context.entry_point = UNDEFINED;
-  //context.objects_table = NULL;
-
-  result = yr_incr_scan_finish(context);
+  yr_incr_scan_finish(&context);
 
 _exit:
-  yr_free(context);
+
+  yr_modules_unload_all(&context);
+
+  _yr_rules_clean_matches(rules);
+
+  if (context.matches_arena != NULL)
+    yr_arena_destroy(context.matches_arena);
+
+  if (context.objects_table != NULL)
+    yr_hash_table_destroy(
+        context.objects_table,
+        (YR_HASH_TABLE_FREE_VALUE_FUNC) yr_object_destroy);
+
+  _yr_rules_lock(rules);
+  rules->tidx_mask &= ~(1 << tidx);
+  _yr_rules_unlock(rules);
+
+  yr_set_tidx(-1);
+
   return result;
 }
 
-
 int yr_incr_scan_init(
-    YR_CONTEXT** context,
+    YR_SCAN_CONTEXT* context,
     YR_RULES* rules,
-    int fast_scan_mode,
+    int flags,
     int timeout,
     YR_CALLBACK_FUNC callback,
     void* user_data)
 {
+  YR_OBJECT* object;
+  YR_EXTERNAL_VARIABLE* external;
+
+  tidx_mask_t bit;
+
+  int tidx = 0;
   int result = ERROR_SUCCESS;
-  int tidx;
-  YR_CONTEXT *new_context;
-  *context = NULL;
-  EVALUATION_CONTEXT eval_context;
 
-  eval_context.file_size = 0;
-  eval_context.mem_block = NULL;
-  eval_context.entry_point = UNDEFINED;
-
-  new_context = (YR_CONTEXT*) yr_malloc(sizeof(YR_CONTEXT));
-  new_context->eval_context = eval_context;
-  new_context->start_time = time(NULL);
-  new_context->rules = rules;
-  new_context->fast_scan_mode = fast_scan_mode;
-  new_context->timeout = timeout;
-  new_context->callback = callback;
-  new_context->user_data = user_data;
+  context->flags = flags;
+  context->callback = callback;
+  context->user_data = user_data;
+  context->entry_point = UNDEFINED;
+  context->objects_table = NULL;
+  context->matches_arena = NULL;
+  context->start_time = time(NULL);
+  context->timeout = timeout;
+  context->rules = rules;
 
   _yr_rules_lock(rules);
 
-<<<<<<< HEAD
-  if (tidx == -1) 
-  {
-    _yr_rules_lock(rules);
-=======
   bit = 1;
->>>>>>> origin/master
 
   while (rules->tidx_mask & bit)
   {
@@ -412,45 +383,27 @@ int yr_incr_scan_init(
     bit <<= 1;
   }
 
-<<<<<<< HEAD
-    if (tidx < MAX_THREADS)
-      rules->threads_count++;
-    else
-      result = ERROR_TOO_MANY_SCAN_THREADS;
-    
-    _yr_rules_unlock(rules);
-=======
   if (tidx < MAX_THREADS)
     rules->tidx_mask |= bit;
   else
     result = ERROR_TOO_MANY_SCAN_THREADS;
 
   _yr_rules_unlock(rules);
->>>>>>> origin/master
 
   if (result != ERROR_SUCCESS)
     return result;
 
   yr_set_tidx(tidx);
 
-  result = yr_arena_create(1024, 0, &(new_context->matches_arena));
-  *context = new_context;
-  return result;
-}
-
-int yr_incr_scan_add_block_with_base(
-    YR_CONTEXT* context,
-    const uint8_t* buffer,
-    size_t buffer_size,
-    int buffer_base,
-    int scanning_process_memory)
-{
-  int result;
-
-  result = yr_hash_table_create(64, &context.objects_table);
+  result = yr_arena_create(1024, 0, &context->matches_arena);
 
   if (result != ERROR_SUCCESS)
-    goto _exit;
+    return result;
+
+  result = yr_hash_table_create(64, &context->objects_table);
+
+  if (result != ERROR_SUCCESS)
+    return result;
 
   external = rules->externals_list_head;
 
@@ -462,74 +415,63 @@ int yr_incr_scan_add_block_with_base(
 
     if (result == ERROR_SUCCESS)
       result = yr_hash_table_add(
-          context.objects_table,
+          context->objects_table,
           external->identifier,
           NULL,
           (void*) object);
 
     if (result != ERROR_SUCCESS)
-      goto _exit;
+      return result;
 
     external++;
   }
 
-  start_time = time(NULL);
+  return result;
+}
 
-  while (block != NULL)
+int yr_incr_scan_add_block(
+    YR_SCAN_CONTEXT* context,
+    YR_MEMORY_BLOCK* block)
+{
+  int result = ERROR_SUCCESS;
+
+  if (context->entry_point == UNDEFINED)
   {
-    if (context.entry_point == UNDEFINED)
-    {
-      if (flags & SCAN_FLAGS_PROCESS_MEMORY)
-        context.entry_point = yr_get_entry_point_address(
-            block->data,
-            block->size,
-            block->base);
-      else
-        context.entry_point = yr_get_entry_point_offset(
-            block->data,
-            block->size);
-    }
+    if (context->flags & SCAN_FLAGS_PROCESS_MEMORY)
+      context->entry_point = yr_get_entry_point_address(
+          block->data,
+          block->size,
+          block->base);
+    else
+      context->entry_point = yr_get_entry_point_offset(
+          block->data,
+          block->size);
+  }
 
-    result = yr_rules_scan_mem_block(
-        rules,
-        block,
-        flags,
-        timeout,
-        start_time,
-        matches_arena);
+  result = yr_rules_scan_mem_block(
+      context,
+      context->rules,
+      block);
 
   return result;
 }
 
-
-<<<<<<< HEAD
-int yr_incr_scan_add_block(
-    YR_CONTEXT* context,
-    const uint8_t* buffer,
-    size_t buffer_size)
-{
-  return yr_incr_scan_add_block_with_base(context, buffer, buffer_size, -1, 0);
-}
-
 int yr_incr_scan_finish(
-    YR_CONTEXT* context)
+    YR_SCAN_CONTEXT* context)
 {
   YR_RULE* rule;
   int result;
   int tidx = yr_get_tidx();
   int message;
 
-  result = yr_execute_code(context->rules, &context->eval_context);
-=======
   result = yr_execute_code(
-      rules,
-      &context,
-      timeout,
-      start_time);
->>>>>>> origin/master
+      context->rules,
+      context,
+      context->timeout,
+      context->start_time);
 
   if (result != ERROR_SUCCESS)
-    goto _exit;
+    return result;
 
   rule = context->rules->rules_list_head;
 
@@ -545,7 +487,7 @@ int yr_incr_scan_finish(
 
   rule = context->rules->rules_list_head;
 
-  while (!RULE_IS_NULL(rule))
+  while (!RULE_IS_NULL(rule) && result == ERROR_SUCCESS )
   {
     if (rule->t_flags[tidx] & RULE_TFLAGS_MATCH &&
         !(rule->ns->t_flags[tidx] & NAMESPACE_TFLAGS_UNSATISFIED_GLOBAL))
@@ -563,11 +505,11 @@ int yr_incr_scan_finish(
       {
         case CALLBACK_ABORT:
           result = ERROR_SUCCESS;
-          goto _exit;
+          break;
 
         case CALLBACK_ERROR:
           result = ERROR_CALLBACK_ERROR;
-          goto _exit;
+          break;
       }
     }
 
@@ -575,30 +517,8 @@ int yr_incr_scan_finish(
   }
 
   context->callback(CALLBACK_MSG_SCAN_FINISHED, NULL, context->user_data);
-
-_exit:
-
-  yr_modules_unload_all(&context);
-
-  _yr_rules_clean_matches(rules);
-
-  if (context->matches_arena != NULL)
-    yr_arena_destroy(context->matches_arena);
-
-  if (context.objects_table != NULL)
-    yr_hash_table_destroy(
-        context.objects_table,
-        (YR_HASH_TABLE_FREE_VALUE_FUNC) yr_object_destroy);
-
-  _yr_rules_lock(rules);
-  rules->tidx_mask &= ~(1 << tidx);
-  _yr_rules_unlock(rules);
-
-  yr_set_tidx(-1);
-
   return result;
 }
-
 
 int yr_rules_scan_mem(
     YR_RULES* rules,

@@ -77,6 +77,23 @@ int yr_rules_scan_proc(
     void* user_data,
     int timeout);
 
+int yr_incr_scan_init(
+    YR_SCAN_CONTEXT* context,
+    YR_RULES* rules,
+    int fast_scan_mode,
+    int timeout,
+    YR_CALLBACK_FUNC callback,
+    void* user_data);
+
+int yr_incr_scan_add_block(
+    YR_SCAN_CONTEXT* context,
+    YR_MEMORY_BLOCK* block);
+
+
+int yr_incr_scan_finish(
+    YR_SCAN_CONTEXT* context
+    );
+
 
 int yr_rules_save(
     YR_RULES* rules,

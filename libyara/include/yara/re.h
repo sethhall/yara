@@ -129,7 +129,7 @@ struct RE_ERROR {
 
 
 typedef int RE_MATCH_CALLBACK_FUNC(
-    const uint8_t* match,
+    uint8_t* match,
     int match_length,
     int flags,
     void* args);
@@ -204,7 +204,7 @@ int yr_re_emit_code(
 
 int yr_re_exec(
     RE_CODE re_code,
-    const uint8_t* input,
+    uint8_t* input,
     size_t input_size,
     int flags,
     RE_MATCH_CALLBACK_FUNC callback,

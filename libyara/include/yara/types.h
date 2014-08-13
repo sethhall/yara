@@ -369,12 +369,16 @@ typedef struct _YR_SCAN_CONTEXT
   uint64_t  entry_point;
 
   int flags;
-  void* user_data;
+  time_t start_time;
+  int timeout;
 
   YR_MEMORY_BLOCK*  mem_block;
   YR_HASH_TABLE*  objects_table;
-  YR_CALLBACK_FUNC  callback;
+  YR_ARENA* matches_arena;
+  YR_RULES* rules;
 
+  YR_CALLBACK_FUNC  callback;
+  void* user_data;
 } YR_SCAN_CONTEXT;
 
 

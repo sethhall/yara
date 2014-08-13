@@ -1472,7 +1472,7 @@ void _yr_re_fiber_sync(
 
 int yr_re_exec(
     RE_CODE re_code,
-    const uint8_t* input_data,
+    uint8_t* input_data,
     size_t input_size,
     int flags,
     RE_MATCH_CALLBACK_FUNC callback,
