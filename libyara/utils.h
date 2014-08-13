@@ -1,5 +1,5 @@
 /*
-Copyright (c) 2013. Victor M. Alvarez [plusvic@gmail.com].
+Copyright (c) 2007. The YARA Authors. All Rights Reserved.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -14,8 +14,8 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-#ifndef _UTILS_H
-#define _UTILS_H
+#ifndef YR_UTILS_H
+#define YR_UTILS_H
 
 size_t xtoi(const char* hexstr);
 

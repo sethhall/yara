@@ -1,3 +1,19 @@
+#
+# Copyright (c) 2007-2013. The YARA Authors. All Rights Reserved.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#    http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+#
+
 import tempfile
 import binascii
 import os
@@ -105,6 +121,7 @@ RE_TESTS = [
   ('ab{0,}c', 'abbbc', SUCCEED, 'abbbc'),
   ('ab{,3}c', 'abbbc', SUCCEED, 'abbbc'),
   ('ab{,2}c', 'abbbc', FAIL),
+  ('ab{4,5}bc', 'abbbbc', FAIL),
   ('ab{.*}', 'ab{c}', SUCCEED, 'ab{c}'),
   ('(ab{1,2}c){1,3}', 'abbcabc', SUCCEED, 'abbcabc'),
   ('ab(c|cc){1,3}d', 'abccccccd', SUCCEED, 'abccccccd'),
@@ -147,6 +164,11 @@ RE_TESTS = [
   (r'\x00\x01\x02', '\x00\x01\x02', SUCCEED, '\x00\x01\x02'),
   (r'[\x00-\x02]+', '\x00\x01\x02', SUCCEED, '\x00\x01\x02'),
   (r'[\x00-\x02]+', '\x03\x04\x05', FAIL),
+  (r'[\x5D]', ']', SUCCEED, ']'),
+  (r'[\0x5A-\x5D]', '\x5B', SUCCEED, '\x5B'),
+  (r'[\x5D-\x5F]', '\x5E', SUCCEED, '\x5E'),
+  (r'[\x5C-\x5F]', '\x5E', SUCCEED, '\x5E'),
+  (r'[\x5D-\x5F]', '\x5E', SUCCEED, '\x5E'),
   ('a\wc', 'abc', SUCCEED, 'abc'),
   ('a\wc', 'a_c', SUCCEED, 'a_c'),
   ('a\wc', 'a0c', SUCCEED, 'a0c'),
@@ -182,6 +204,11 @@ RE_TESTS = [
   ('abc|123$', '123x', FAIL),
   ('abc|^123', '123', SUCCEED, '123'),
   ('abc|^123', 'x123', FAIL),
+  ('^abc$', 'abc', SUCCEED, 'abc'),
+  ('^abc$', 'abcc', FAIL),
+  ('^abc', 'abcc', SUCCEED, 'abc'),
+  ('^abc$', 'aabc', FAIL),
+  ('abc$', 'aabc', SUCCEED, 'abc'),
   ('^a(bc+|b[eh])g|.h$', 'abhg', SUCCEED, 'abhg'),
   ('(bc+d$|ef*g.|h?i(j|k))', 'effgz', SUCCEED, 'effgz'),
   ('(bc+d$|ef*g.|h?i(j|k))', 'ij', SUCCEED, 'ij'),
@@ -372,6 +399,10 @@ class TestYara(unittest.TestCase):
           'rule test { strings: $a = { 31 32 [0-3] 34 35 [1-] 38 39 } condition: $a }',
         ], '123456789')
 
+        self.assertTrueRules([
+          'rule test { strings: $a = { 31 32 [-] 38 39 } condition: all of them }',
+        ], '123456789')
+
         self.assertFalseRules([
           'rule test { strings: $a = { 31 32 [-] 32 33 } condition: $a }',
           'rule test { strings: $a = { 35 36 [-] 31 32 } condition: $a }',
@@ -441,7 +472,8 @@ class TestYara(unittest.TestCase):
             'rule test { strings: $a = /ppi\tmi/ condition: $a }',
             'rule test { strings: $a = /ppi\.mi/ condition: $a }',
             'rule test { strings: $a = /^mississippi/ fullword condition: $a }',
-        ], 'mississippi\tmississippi.mississippi')
+            'rule test { strings: $a = /mississippi.*mississippi$/s condition: $a }',
+        ], 'mississippi\tmississippi.mississippi\nmississippi')
 
         self.assertFalseRules([
             'rule test { strings: $a = /^ssi/ condition: $a }',

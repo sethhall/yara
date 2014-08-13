@@ -1,5 +1,5 @@
 /*
-Copyright (c) 2013. Victor M. Alvarez [plusvic@gmail.com].
+Copyright (c) 2013. The YARA Authors. All Rights Reserved.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -236,21 +236,21 @@ char* yr_compiler_get_current_file_name(
 
 int _yr_compiler_set_namespace(
     YR_COMPILER* compiler,
-    const char* namespace)
+    const char* namespace_)
 {
   YR_NAMESPACE* ns;
+
   char* ns_name;
   int result;
   int i;
   int found;
-
 
   ns = yr_arena_base_address(compiler->namespaces_arena);
   found = FALSE;
 
   for (i = 0; i < compiler->namespaces_count; i++)
   {
-    if (strcmp(ns->name, namespace) == 0)
+    if (strcmp(ns->name, namespace_) == 0)
     {
       found = TRUE;
       break;
@@ -266,7 +266,7 @@ int _yr_compiler_set_namespace(
   {
     result = yr_arena_write_string(
         compiler->sz_arena,
-        namespace,
+        namespace_,
         &ns_name);
 
     if (result == ERROR_SUCCESS)
@@ -295,10 +295,10 @@ int _yr_compiler_set_namespace(
 int yr_compiler_add_file(
     YR_COMPILER* compiler,
     FILE* rules_file,
-    const char* namespace)
+    const char* namespace_)
 {
-  if (namespace != NULL)
-    _yr_compiler_set_namespace(compiler, namespace);
+  if (namespace_ != NULL)
+    _yr_compiler_set_namespace(compiler, namespace_);
   else
     _yr_compiler_set_namespace(compiler, "default");
 
@@ -309,10 +309,10 @@ int yr_compiler_add_file(
 int yr_compiler_add_string(
     YR_COMPILER* compiler,
     const char* rules_string,
-    const char* namespace)
+    const char* namespace_)
 {
-  if (namespace != NULL)
-    _yr_compiler_set_namespace(compiler, namespace);
+  if (namespace_ != NULL)
+    _yr_compiler_set_namespace(compiler, namespace_);
   else
     _yr_compiler_set_namespace(compiler, "default");
 
@@ -504,7 +504,7 @@ int yr_compiler_get_rules(
     yara_rules->externals_list_head = rules_file_header->externals_list_head;
     yara_rules->automaton = rules_file_header->automaton;
     yara_rules->code_start = rules_file_header->code_start;
-    yara_rules->threads_count = 0;
+    yara_rules->tidx_mask = 0;
 
     #if WIN32
     yara_rules->mutex = CreateMutex(NULL, FALSE, NULL);

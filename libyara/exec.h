@@ -1,5 +1,5 @@
 /*
-Copyright (c) 2007. Victor M. Alvarez [plusvic@gmail.com].
+Copyright (c) 2013. The YARA Authors. All Rights Reserved.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -14,8 +14,8 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-#ifndef _EXEC_H
-#define _EXEC_H
+#ifndef YR_EXEC_H
+#define YR_EXEC_H
 
 #include "yara.h"
 
@@ -88,7 +88,9 @@ typedef struct _EVALUATION_CONTEXT
 
 int yr_execute_code(
     YR_RULES* rules,
-    EVALUATION_CONTEXT* context);
+    EVALUATION_CONTEXT* context,
+    int timeout,
+    time_t start_time);
 
 #endif
 

@@ -1,5 +1,5 @@
 /*
-Copyright (c) 2007. Victor M. Alvarez [plusvic@gmail.com].
+Copyright (c) 2013. The YARA Authors. All Rights Reserved.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -16,6 +16,7 @@ limitations under the License.
 
 #include <string.h>
 #include <assert.h>
+#include <time.h>
 
 #include "exec.h"
 #include "re.h"
@@ -68,7 +69,9 @@ function_read(int32_t)
 
 int yr_execute_code(
     YR_RULES* rules,
-    EVALUATION_CONTEXT* context)
+    EVALUATION_CONTEXT* context,
+    int timeout,
+    time_t start_time)
 {
   int64_t r1;
   int64_t r2;
@@ -88,6 +91,7 @@ int yr_execute_code(
   int count;
   int result;
   int flags;
+  int cycle = 0;
   int tidx = yr_get_tidx();
 
   while(1)
@@ -95,7 +99,8 @@ int yr_execute_code(
     switch(*ip)
     {
       case HALT:
-        // When the halt instruction is reached the stack should be empty.
+        // When the halt instruction is reached the stack
+        // should be empty.
         assert(sp == 0);
         return ERROR_SUCCESS;
 
@@ -323,7 +328,7 @@ int yr_execute_code(
         ip += sizeof(uint64_t);
         if (external->type == EXTERNAL_VARIABLE_TYPE_FIXED_STRING ||
             external->type == EXTERNAL_VARIABLE_TYPE_MALLOC_STRING)
-          push(strlen(external->string) > 0);
+          push(external->string[0] != '\0');
         else
           push(external->integer);
         break;
@@ -405,14 +410,7 @@ int yr_execute_code(
       case SCOUNT:
         pop(r1);
         string = UINT64_TO_PTR(YR_STRING*, r1);
-        match = string->matches[tidx].head;
-        found = 0;
-        while (match != NULL)
-        {
-          found++;
-          match = match->next;
-        }
-        push(found);
+        push(string->matches[tidx].count);
         break;
 
       case SOFFSET:
@@ -545,9 +543,24 @@ int yr_execute_code(
         assert(FALSE);
     }
 
+    if (timeout > 0)  // timeout == 0 means no timeout
+    {
+      // Check for timeout every 10 instruction cycles.
+
+      if (++cycle == 10)
+      {
+        if (difftime(time(NULL), start_time) > timeout)
+          return ERROR_SCAN_TIMEOUT;
+
+        cycle = 0;
+      }
+    }
+
     ip++;
   }
 
   // After executing the code the stack should be empty.
   assert(sp == 0);
+
+  return ERROR_SUCCESS;
 }

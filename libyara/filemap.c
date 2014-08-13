@@ -1,5 +1,5 @@
 /*
-Copyright (c) 2007. Victor M. Alvarez [plusvic@gmail.com].
+Copyright (c) 2007. The YARA Authors. All Rights Reserved.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -68,7 +68,7 @@ int yr_filemap_map(
       0,
       NULL);
 
-  if (pmapped_file->mapping == INVALID_HANDLE_VALUE)
+  if (pmapped_file->mapping == NULL)
   {
     CloseHandle(pmapped_file->file);
     return ERROR_COULD_NOT_MAP_FILE;

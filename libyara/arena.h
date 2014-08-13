@@ -1,5 +1,5 @@
 /*
-Copyright (c) 2013. Victor M. Alvarez [plusvic@gmail.com].
+Copyright (c) 2013. The YARA Authors. All Rights Reserved.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -14,8 +14,8 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-#ifndef _ARENA_H
-#define _ARENA_H
+#ifndef YR_ARENA_H
+#define YR_ARENA_H
 
 #include <stdint.h>
 #include <stddef.h>

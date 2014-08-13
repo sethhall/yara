@@ -1,6 +1,5 @@
 /*
-Copyright (c) 2007. Victor M. Alvarez [plusvic@gmail.com] &
-                    Stefan Buehlmann [stefan.buehlmann@joebox.org].
+Copyright (c) 2007-2013. The YARA Authors. All Rights Reserved.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -80,7 +79,8 @@ int yr_process_get_memory(
 
   address = si.lpMinimumApplicationAddress;
 
-  while (VirtualQueryEx(hProcess, address, &mbi, sizeof(mbi)) != 0)
+  while (address < si.lpMaximumApplicationAddress &&
+         VirtualQueryEx(hProcess, address, &mbi, sizeof(mbi)) != 0)
   {
     if (mbi.State == MEM_COMMIT && ((mbi.Protect & PAGE_NOACCESS) == 0))
     {

@@ -1,5 +1,5 @@
 /*
-Copyright (c) 2007. Victor M. Alvarez [plusvic@gmail.com].
+Copyright (c) 2007-2013. The YARA Authors. All Rights Reserved.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -23,7 +23,8 @@ limitations under the License.
 // terminated with a null char.
 //
 
-#define SIZED_STRING_FLAGS_NO_CASE 	1
+#define SIZED_STRING_FLAGS_NO_CASE  1
+#define SIZED_STRING_FLAGS_DOT_ALL  2
 
 typedef struct _SIZED_STRING
 {

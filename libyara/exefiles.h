@@ -1,5 +1,5 @@
 /*
-Copyright (c) 2007. Victor M. Alvarez [plusvic@gmail.com].
+Copyright (c) 2007. The YARA Authors. All Rights Reserved.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -14,8 +14,8 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-#ifndef _EXEFILES_H
-#define _EXEFILES_H
+#ifndef YR_EXEFILES_H
+#define YR_EXEFILES_H
 
 int yr_file_is_pe(
 		uint8_t* buffer,

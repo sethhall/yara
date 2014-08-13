@@ -1,5 +1,5 @@
- /*
-Copyright (c) 2013. Victor M. Alvarez [plusvic@gmail.com].
+/*
+Copyright (c) 2013. The YARA Authors. All Rights Reserved.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -152,6 +152,8 @@ inline int _yr_scan_wicompare(
 // characteristics of the code generated for this kind of strings and do the
 // matching in a faster way.
 //
+// See return values in yr_re_exec (re.c)
+//
 
 #define MAX_FAST_HEX_RE_STACK 300
 
@@ -265,6 +267,10 @@ int _yr_scan_fast_hex_re_exec(
                  *(ip + 12) == *next_input))
             {
               assert(sp < MAX_FAST_HEX_RE_STACK);
+
+              if (sp >= MAX_FAST_HEX_RE_STACK)
+                return -3;
+
               code_stack[sp] = ip + 11;
               input_stack[sp] = next_input;
               matches_stack[sp] = matches + i;
@@ -333,18 +339,21 @@ void _yr_scan_update_match_chain_length(
 }
 
 
-void _yr_scan_add_match_to_list(
+int _yr_scan_add_match_to_list(
     YR_MATCH* match,
     YR_MATCHES* matches_list)
 {
   YR_MATCH* insertion_point = matches_list->tail;
+
+  if (matches_list->count == MAX_STRING_MATCHES)
+    return ERROR_TOO_MANY_MATCHES;
 
   while (insertion_point != NULL)
   {
     if (match->offset == insertion_point->offset)
     {
       insertion_point->length = match->length;
-      return;
+      return ERROR_SUCCESS;
     }
 
     if (match->offset > insertion_point->offset)
@@ -366,10 +375,14 @@ void _yr_scan_add_match_to_list(
     matches_list->head = match;
   }
 
+  matches_list->count++;
+
   if (match->next != NULL)
     match->next->prev = match;
   else
     matches_list->tail = match;
+
+  return ERROR_SUCCESS;
 }
 
 
@@ -389,6 +402,7 @@ void _yr_scan_remove_match_from_list(
   if (matches_list->tail == match)
     matches_list->tail = match->prev;
 
+  matches_list->count--;
   match->next = NULL;
   match->prev = NULL;
 }
@@ -412,7 +426,6 @@ int _yr_scan_verify_chained_string_match(
   int32_t full_chain_length;
 
   int add_match = FALSE;
-  int result;
 
   if (matching_string->chained_to == NULL)
   {
@@ -498,8 +511,8 @@ int _yr_scan_verify_chained_string_match(
           match->prev = NULL;
           match->next = NULL;
 
-          _yr_scan_add_match_to_list(
-              match, &string->matches[tidx]);
+          FAIL_ON_ERROR(_yr_scan_add_match_to_list(
+              match, &string->matches[tidx]));
         }
 
         match = next_match;
@@ -507,13 +520,10 @@ int _yr_scan_verify_chained_string_match(
     }
     else
     {
-      result = yr_arena_allocate_memory(
+      FAIL_ON_ERROR(yr_arena_allocate_memory(
           matches_arena,
           sizeof(YR_MATCH),
-          (void**) &new_match);
-
-      if (result != ERROR_SUCCESS)
-        return result;
+          (void**) &new_match));
 
       new_match->offset = match_offset;
       new_match->length = match_length;
@@ -521,9 +531,9 @@ int _yr_scan_verify_chained_string_match(
       new_match->prev = NULL;
       new_match->next = NULL;
 
-      _yr_scan_add_match_to_list(
+      FAIL_ON_ERROR(_yr_scan_add_match_to_list(
           new_match,
-          &matching_string->unconfirmed_matches[tidx]);
+          &matching_string->unconfirmed_matches[tidx]));
     }
   }
 
@@ -615,9 +625,9 @@ int _yr_scan_match_callback(
       new_match->prev = NULL;
       new_match->next = NULL;
 
-      _yr_scan_add_match_to_list(
+      FAIL_ON_ERROR(_yr_scan_add_match_to_list(
           new_match,
-          &string->matches[tidx]);
+          &string->matches[tidx]));
     }
   }
 
@@ -645,6 +655,7 @@ int _yr_scan_verify_re_match(
   RE_EXEC_FUNC exec;
 
   int forward_matches = -1;
+  int backward_matches = -1;
   int flags = 0;
 
   if (STRING_IS_FAST_HEX_REGEXP(ac_match->string))
@@ -655,7 +666,8 @@ int _yr_scan_verify_re_match(
   if (STRING_IS_NO_CASE(ac_match->string))
     flags |= RE_FLAGS_NO_CASE;
 
-  if (STRING_IS_HEX(ac_match->string))
+  if (STRING_IS_HEX(ac_match->string) ||
+      STRING_IS_REGEXP_DOT_ALL(ac_match->string))
     flags |= RE_FLAGS_DOT_ALL;
 
   if (STRING_IS_ASCII(ac_match->string))
@@ -669,8 +681,7 @@ int _yr_scan_verify_re_match(
         NULL);
   }
 
-  if (STRING_IS_WIDE(ac_match->string) &&
-      forward_matches < 0)
+  if (STRING_IS_WIDE(ac_match->string) && forward_matches == -1)
   {
     flags |= RE_FLAGS_WIDE;
     forward_matches = exec(
@@ -682,8 +693,15 @@ int _yr_scan_verify_re_match(
         NULL);
   }
 
-  if (forward_matches < 0)
-    return ERROR_SUCCESS;
+  switch(forward_matches)
+  {
+    case -1:
+      return ERROR_SUCCESS;
+    case -2:
+      return ERROR_INSUFICIENT_MEMORY;
+    case -3:
+      return ERROR_INTERNAL_FATAL_ERROR;
+  }
 
   if (forward_matches == 0 && ac_match->backward_code == NULL)
     return ERROR_SUCCESS;
@@ -698,18 +716,24 @@ int _yr_scan_verify_re_match(
 
   if (ac_match->backward_code != NULL)
   {
-    exec(
+    backward_matches = exec(
         ac_match->backward_code,
         data + offset,
         offset + 1,
         flags | RE_FLAGS_BACKWARDS | RE_FLAGS_EXHAUSTIVE,
         _yr_scan_match_callback,
         (void*) &callback_args);
+
+    if (backward_matches == -2)
+      return ERROR_INSUFICIENT_MEMORY;
+
+    if (backward_matches == -3)
+      return ERROR_INTERNAL_FATAL_ERROR;
   }
   else
   {
-    _yr_scan_match_callback(
-        data + offset, 0, flags, &callback_args);
+    FAIL_ON_ERROR(_yr_scan_match_callback(
+        data + offset, 0, flags, &callback_args));
   }
 
   return ERROR_SUCCESS;
@@ -817,8 +841,8 @@ int _yr_scan_verify_literal_match(
     callback_args.full_word = STRING_IS_FULL_WORD(string);
     callback_args.tidx = yr_get_tidx();
 
-    _yr_scan_match_callback(
-        data + offset, 0, flags, &callback_args);
+    FAIL_ON_ERROR(_yr_scan_match_callback(
+        data + offset, 0, flags, &callback_args));
   }
 
   return ERROR_SUCCESS;
@@ -981,8 +1005,10 @@ void _yr_rules_clean_matches(
 
     while (!STRING_IS_NULL(string))
     {
+      string->matches[tidx].count = 0;
       string->matches[tidx].head = NULL;
       string->matches[tidx].tail = NULL;
+      string->unconfirmed_matches[tidx].count = 0;
       string->unconfirmed_matches[tidx].head = NULL;
       string->unconfirmed_matches[tidx].tail = NULL;
       string++;
@@ -1016,7 +1042,6 @@ int yr_rules_scan_mem_block(
   YR_AC_MATCH* ac_match;
   YR_AC_STATE* current_state;
 
-  time_t current_time;
   size_t i;
 
   current_state = rules->automaton->root;
@@ -1030,13 +1055,13 @@ int yr_rules_scan_mem_block(
     {
       if (ac_match->backtrack <= i)
       {
-        _yr_scan_verify_match(
-              ac_match,
-              data,
-              data_size,
-              i - ac_match->backtrack,
-              matches_arena,
-              fast_scan_mode);
+        FAIL_ON_ERROR(_yr_scan_verify_match(
+            ac_match,
+            data,
+            data_size,
+            i - ac_match->backtrack,
+            matches_arena,
+            fast_scan_mode));
       }
 
       ac_match = ac_match->next;
@@ -1057,9 +1082,7 @@ int yr_rules_scan_mem_block(
 
     if (timeout > 0 && i % 256 == 0)
     {
-      current_time = time(NULL);
-
-      if (difftime(current_time, start_time) > timeout)
+      if (difftime(time(NULL), start_time) > timeout)
         return ERROR_SCAN_TIMEOUT;
     }
   }
@@ -1070,13 +1093,13 @@ int yr_rules_scan_mem_block(
   {
     if (ac_match->backtrack <= data_size)
     {
-      _yr_scan_verify_match(
+      FAIL_ON_ERROR(_yr_scan_verify_match(
           ac_match,
           data,
           data_size,
           data_size - ac_match->backtrack,
           matches_arena,
-          fast_scan_mode);
+          fast_scan_mode));
     }
 
     ac_match = ac_match->next;
@@ -1097,6 +1120,7 @@ int yr_rules_scan_mem_blocks(
 {
   int result = ERROR_SUCCESS;
 
+<<<<<<< HEAD
   YR_CONTEXT *context = NULL;
   result = yr_incr_scan_init(&context, rules, fast_scan_mode, timeout, callback, user_data);
   if ( result != ERROR_SUCCESS )
@@ -1111,6 +1135,14 @@ int yr_rules_scan_mem_blocks(
 
     block = block->next;
   }
+=======
+  time_t start_time;
+  tidx_mask_t bit;
+
+  int message;
+  int tidx = 0;
+  int result = ERROR_SUCCESS;
+>>>>>>> origin/master
 
   result = yr_incr_scan_finish(context);
 
@@ -1147,26 +1179,42 @@ int yr_incr_scan_init(
   new_context->callback = callback;
   new_context->user_data = user_data;
 
-  tidx = yr_get_tidx();
+  _yr_rules_lock(rules);
 
+<<<<<<< HEAD
   if (tidx == -1) 
   {
     _yr_rules_lock(rules);
+=======
+  bit = 1;
+>>>>>>> origin/master
 
-    tidx = rules->threads_count;
+  while (rules->tidx_mask & bit)
+  {
+    tidx++;
+    bit <<= 1;
+  }
 
+<<<<<<< HEAD
     if (tidx < MAX_THREADS)
       rules->threads_count++;
     else
       result = ERROR_TOO_MANY_SCAN_THREADS;
     
     _yr_rules_unlock(rules);
+=======
+  if (tidx < MAX_THREADS)
+    rules->tidx_mask |= bit;
+  else
+    result = ERROR_TOO_MANY_SCAN_THREADS;
 
-    if (result != ERROR_SUCCESS)
-      return result;
+  _yr_rules_unlock(rules);
+>>>>>>> origin/master
 
-    yr_set_tidx(tidx);
-  }
+  if (result != ERROR_SUCCESS)
+    return result;
+
+  yr_set_tidx(tidx);
 
   result = yr_arena_create(1024, 0, &(new_context->matches_arena));
   *context = new_context;
@@ -1208,6 +1256,7 @@ int yr_incr_scan_add_block_with_base(
 }
 
 
+<<<<<<< HEAD
 int yr_incr_scan_add_block(
     YR_CONTEXT* context,
     const uint8_t* buffer,
@@ -1225,6 +1274,13 @@ int yr_incr_scan_finish(
   int message;
 
   result = yr_execute_code(context->rules, &context->eval_context);
+=======
+  result = yr_execute_code(
+      rules,
+      &context,
+      timeout,
+      start_time);
+>>>>>>> origin/master
 
   if (result != ERROR_SUCCESS)
     goto _exit;
@@ -1282,6 +1338,12 @@ _exit:
 
   if (context != NULL)
     yr_free(context);
+
+  _yr_rules_lock(rules);
+  rules->tidx_mask &= ~(1 << tidx);
+  _yr_rules_unlock(rules);
+
+  yr_set_tidx(-1);
 
   return result;
 }
@@ -1391,7 +1453,7 @@ int yr_rules_save(
     YR_RULES* rules,
     const char* filename)
 {
-  assert(rules->threads_count == 0);
+  assert(rules->tidx_mask == 0);
   return yr_arena_save(rules->arena, filename);
 }
 
@@ -1424,7 +1486,7 @@ int yr_rules_load(
   new_rules->code_start = header->code_start;
   new_rules->externals_list_head = header->externals_list_head;
   new_rules->rules_list_head = header->rules_list_head;
-  new_rules->threads_count = 0;
+  new_rules->tidx_mask = 0;
 
   #if WIN32
   new_rules->mutex = CreateMutex(NULL, FALSE, NULL);
@@ -1459,6 +1521,12 @@ int yr_rules_destroy(
 
     external++;
   }
+
+  #if WIN32
+  CloseHandle(rules->mutex);
+  #else
+  pthread_mutex_destroy(&rules->mutex);
+  #endif
 
   yr_arena_destroy(rules->arena);
   yr_free(rules);

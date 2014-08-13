@@ -1,6 +1,5 @@
 /*
-Copyright (c) 2007. Victor M. Alvarez [plusvic@gmail.com] &
-                    Stefan Buehlmann [stefan.buehlmann@joebox.org].
+Copyright (c) 2007. The YARA Authors. All Rights Reserved.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -15,8 +14,8 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-#ifndef _PROC_H
-#define _PROC_H
+#ifndef YR_PROC_H
+#define YR_PROC_H
 
 #include "yara.h"
 

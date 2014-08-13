@@ -8,6 +8,8 @@ include_HEADERS = yara.h
 
 lib_LTLIBRARIES = libyara.la
 
+libyara_la_LDFLAGS = -export-symbols libyara.sym -version-number 2:0
+
 libyara_la_SOURCES = \
   ahocorasick.c \
   ahocorasick.h \
@@ -46,7 +48,6 @@ libyara_la_SOURCES = \
   re_lexer.h \
   re_lexer.l \
   rules.c \
-  rules.h \
   sizedstr.h \
   utils.c \
   utils.h

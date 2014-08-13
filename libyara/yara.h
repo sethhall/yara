@@ -1,5 +1,5 @@
 /*
-Copyright (c) 2007. Victor M. Alvarez [plusvic@gmail.com].
+Copyright (c) 2007-2013. The YARA Authors. All Rights Reserved.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -14,8 +14,8 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-#ifndef _YARA_H
-#define _YARA_H
+#ifndef YR_YARA_H
+#define YR_YARA_H
 
 #include <stdio.h>
 #include <stdint.h>
@@ -28,6 +28,8 @@ typedef HANDLE mutex_t;
 #include <pthread.h>
 typedef pthread_mutex_t mutex_t;
 #endif
+
+typedef int32_t tidx_mask_t;
 
 #ifdef _MSC_VER
 #define snprintf _snprintf
@@ -84,24 +86,32 @@ typedef pthread_mutex_t mutex_t;
 #define ERROR_TOO_MANY_SCAN_THREADS             27
 #define ERROR_CALLBACK_ERROR                    28
 #define ERROR_INVALID_ARGUMENT                  29
-#define ERROR_INTERNAL_FATAL_ERROR              30
+#define ERROR_TOO_MANY_MATCHES                  30
+#define ERROR_INTERNAL_FATAL_ERROR              31
 
 
-#define CALLBACK_MSG_RULE_MATCHING            1
-#define CALLBACK_MSG_RULE_NOT_MATCHING        2
-#define CALLBACK_MSG_SCAN_FINISHED            3
+#define CALLBACK_MSG_RULE_MATCHING              1
+#define CALLBACK_MSG_RULE_NOT_MATCHING          2
+#define CALLBACK_MSG_SCAN_FINISHED              3
 
-#define CALLBACK_CONTINUE  0
-#define CALLBACK_ABORT     1
-#define CALLBACK_ERROR     2
+#define CALLBACK_CONTINUE   0
+#define CALLBACK_ABORT      1
+#define CALLBACK_ERROR      2
 
-#define MAX_ATOM_LENGTH 4
-#define LOOP_LOCAL_VARS 4
-#define MAX_LOOP_NESTING 4
-#define MAX_INCLUDE_DEPTH 16
-#define MAX_THREADS 32
+#define MAX_ATOM_LENGTH     4
+#define LOOP_LOCAL_VARS     4
+#define MAX_LOOP_NESTING    4
+#define MAX_INCLUDE_DEPTH   16
+#define MAX_STRING_MATCHES  5000
+
 #define STRING_CHAINING_THRESHOLD 200
 #define LEX_BUF_SIZE  1024
+
+// MAX_THREADS is the number of threads that can use a YR_RULES
+// object simultaneosly. This value is limited by the number of
+// bits in tidx_mask.
+
+#define MAX_THREADS sizeof(tidx_mask_t) * 8
 
 
 #ifndef MAX_PATH
@@ -166,6 +176,7 @@ typedef pthread_mutex_t mutex_t;
 #define STRING_GFLAGS_NULL              0x1000
 #define STRING_GFLAGS_CHAIN_PART        0x2000
 #define STRING_GFLAGS_CHAIN_TAIL        0x4000
+#define STRING_GFLAGS_REGEXP_DOT_ALL    0x8000
 
 #define STRING_IS_HEX(x) \
     (((x)->g_flags) & STRING_GFLAGS_HEXADECIMAL)
@@ -181,6 +192,9 @@ typedef pthread_mutex_t mutex_t;
 
 #define STRING_IS_REGEXP(x) \
     (((x)->g_flags) & STRING_GFLAGS_REGEXP)
+
+#define STRING_IS_REGEXP_DOT_ALL(x) \
+    (((x)->g_flags) & STRING_GFLAGS_REGEXP_DOT_ALL)
 
 #define STRING_IS_FULL_WORD(x) \
     (((x)->g_flags) & STRING_GFLAGS_FULL_WORD)
@@ -337,6 +351,8 @@ typedef struct _YR_META
 
 typedef struct _YR_MATCHES
 {
+  int32_t count;
+
   DECLARE_REFERENCE(YR_MATCH*, head);
   DECLARE_REFERENCE(YR_MATCH*, tail);
 
@@ -580,8 +596,9 @@ typedef struct _YR_MEMORY_BLOCK
 
 typedef struct _YR_RULES {
 
-  int threads_count;
+  tidx_mask_t tidx_mask;
   uint8_t* code_start;
+
   mutex_t mutex;
 
   YR_ARENA* arena;
@@ -624,13 +641,13 @@ void yr_compiler_destroy(
 int yr_compiler_add_file(
     YR_COMPILER* compiler,
     FILE* rules_file,
-    const char* ns);
+    const char* namespace_);
 
 
 int yr_compiler_add_string(
     YR_COMPILER* compiler,
     const char* rules_string,
-    const char* ns);
+    const char* namespace_);
 
 
 int yr_compiler_push_file_name(

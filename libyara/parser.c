@@ -1,5 +1,5 @@
 /*
-Copyright (c) 2013. Victor M. Alvarez [plusvic@gmail.com].
+Copyright (c) 2013. The YARA Authors. All Rights Reserved.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -111,27 +111,33 @@ void yr_parser_emit_pushes_for_strings(
 
   while(!STRING_IS_NULL(string))
   {
-    string_identifier = string->identifier;
-    target_identifier = identifier;
+    // Don't generate pushes for strings chained to another one, we are
+    // only interested in non-chained strings or the head of the chain.
 
-    while (*target_identifier != '\0' &&
-           *string_identifier != '\0' &&
-           *target_identifier == *string_identifier)
+    if (string->chained_to == NULL)
     {
-      target_identifier++;
-      string_identifier++;
-    }
+      string_identifier = string->identifier;
+      target_identifier = identifier;
 
-    if ((*target_identifier == '\0' && *string_identifier == '\0') ||
-         *target_identifier == '*')
-    {
-      yr_parser_emit_with_arg_reloc(
-          yyscanner,
-          PUSH,
-          PTR_TO_UINT64(string),
-          NULL);
+      while (*target_identifier != '\0' &&
+             *string_identifier != '\0' &&
+             *target_identifier == *string_identifier)
+      {
+        target_identifier++;
+        string_identifier++;
+      }
 
-      string->g_flags |= STRING_GFLAGS_REFERENCED;
+      if ((*target_identifier == '\0' && *string_identifier == '\0') ||
+           *target_identifier == '*')
+      {
+        yr_parser_emit_with_arg_reloc(
+            yyscanner,
+            PUSH,
+            PTR_TO_UINT64(string),
+            NULL);
+
+        string->g_flags |= STRING_GFLAGS_REFERENCED;
+      }
     }
 
     string = yr_arena_next_address(
@@ -405,6 +411,9 @@ YR_STRING* yr_parser_reduce_string_declaration(
 
   if (str->flags & SIZED_STRING_FLAGS_NO_CASE)
     flags |= STRING_GFLAGS_NO_CASE;
+
+  if (str->flags & SIZED_STRING_FLAGS_DOT_ALL)
+    flags |= STRING_GFLAGS_REGEXP_DOT_ALL;
 
   // The STRING_GFLAGS_SINGLE_MATCH flag indicates that finding
   // a single match for the string is enough. This is true in

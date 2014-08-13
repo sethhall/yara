@@ -1,5 +1,5 @@
 /*
-Copyright (c) 2013. Victor M. Alvarez [plusvic@gmail.com].
+Copyright (c) 2013. The YARA Authors. All Rights Reserved.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -37,8 +37,11 @@ from files.
 #include "yara.h"
 
 
-#define ARENA_FILE_VERSION      1
+#define ARENA_FILE_VERSION      3
 
+
+#pragma pack(push)
+#pragma pack(1)
 
 typedef struct _ARENA_FILE_HEADER
 {
@@ -47,6 +50,8 @@ typedef struct _ARENA_FILE_HEADER
   uint8_t   version;
 
 } ARENA_FILE_HEADER;
+
+#pragma pack(pop)
 
 
 #define free_space(page) \
@@ -871,7 +876,7 @@ int yr_arena_save(
   // Only coalesced arenas can be saved.
   assert(arena->flags & ARENA_FLAGS_COALESCED);
 
-  fh = fopen(filename, "w");
+  fh = fopen(filename, "wb");
 
   if (fh == NULL)
     return ERROR_COULD_NOT_OPEN_FILE;
