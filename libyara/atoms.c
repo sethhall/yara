@@ -44,7 +44,7 @@ regexp /(abc|efg)/. In this case YARA must search for both "abc" AND "efg" and
 fully evaluate the regexp whenever one of those atoms is found.
 
 In the regexp /Look(at|into)this/ YARA can search for "Look", or search for
-"this", or search for both "at" and "into". This what we call an atoms tree,
+"this", or search for both "at" and "into". This is what we call an atoms tree,
 because it can be represented by the following tree structure:
 
 -OR
@@ -68,16 +68,12 @@ will end up using the "Look" atom alone, but in /a(bcd|efg)h/ atoms "bcd" and
 #include <assert.h>
 #include <string.h>
 
-#include "atoms.h"
-#include "mem.h"
-
-#ifndef min
-#define min(x, y)  ((x < y) ? (x) : (y))
-#endif
-
-#ifndef max
-#define max(x, y)  ((x > y) ? (x) : (y))
-#endif
+#include <yara/utils.h>
+#include <yara/atoms.h>
+#include <yara/limits.h>
+#include <yara/mem.h>
+#include <yara/error.h>
+#include <yara/types.h>
 
 
 #define append_current_leaf_to_node(node) \
@@ -728,13 +724,14 @@ ATOM_TREE_NODE* _yr_atoms_extract_from_re_node(
 
       append_current_leaf_to_node(current_node);
 
-      if (re_node->start > 0)
+      for (i = 0; i < re_node->start; i++)
       {
         current_node = _yr_atoms_extract_from_re_node(
             re_node->left, atom_tree, current_node);
-
-        append_current_leaf_to_node(current_node);
       }
+
+      if (re_node->start > 0)
+        append_current_leaf_to_node(current_node);
 
       return current_node;
 

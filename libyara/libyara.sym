@@ -1,14 +1,15 @@
 yr_initialize
 yr_finalize
 yr_finalize_thread
+yr_filemap_map
+yr_filemap_unmap
 yr_get_tidx
 yr_set_tidx
 yr_compiler_create
 yr_compiler_destroy
 yr_compiler_add_file
 yr_compiler_add_string
-yr_compiler_push_file_name
-yr_compiler_pop_file_name
+yr_compiler_set_callback
 yr_compiler_get_error_message
 yr_compiler_get_current_file_name
 yr_compiler_define_integer_variable
@@ -24,3 +25,4 @@ yr_rules_destroy
 yr_rules_define_integer_variable
 yr_rules_define_boolean_variable
 yr_rules_define_string_variable
+yr_rules_print_profiling_info

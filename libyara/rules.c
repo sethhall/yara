@@ -19,16 +19,22 @@ limitations under the License.
 #include <time.h>
 #include <ctype.h>
 
-#include "ahocorasick.h"
-#include "arena.h"
-#include "exec.h"
-#include "exefiles.h"
-#include "filemap.h"
-#include "mem.h"
-#include "proc.h"
-#include "re.h"
-#include "utils.h"
-#include "yara.h"
+#include <yara/ahocorasick.h>
+#include <yara/arena.h>
+#include <yara/error.h>
+#include <yara/exec.h>
+#include <yara/exefiles.h>
+#include <yara/filemap.h>
+#include <yara/hash.h>
+#include <yara/mem.h>
+#include <yara/proc.h>
+#include <yara/re.h>
+#include <yara/utils.h>
+#include <yara/object.h>
+#include <yara/globals.h>
+#include <yara/libyara.h>
+#include <yara/scan.h>
+#include <yara/modules.h>
 
 
 typedef struct _CALLBACK_ARGS
@@ -40,847 +46,7 @@ typedef struct _CALLBACK_ARGS
   int data_size;
   int full_word;
   int tidx;
-
 } CALLBACK_ARGS;
-
-
-#define inline
-
-inline int _yr_scan_compare(
-    const uint8_t* data,
-    int data_size,
-    uint8_t* string,
-    int string_length)
-{
-  const uint8_t* s1 = data;
-  uint8_t* s2 = string;
-  int i = 0;
-
-  if (data_size < string_length)
-    return 0;
-
-  while (i < string_length && *s1++ == *s2++)
-    i++;
-
-  return ((i == string_length) ? i : 0);
-}
-
-
-inline int _yr_scan_icompare(
-    const uint8_t* data,
-    int data_size,
-    uint8_t* string,
-    int string_length)
-{
-  const uint8_t* s1 = data;
-  uint8_t* s2 = string;
-  int i = 0;
-
-  if (data_size < string_length)
-    return 0;
-
-  while (i < string_length && lowercase[*s1++] == lowercase[*s2++])
-    i++;
-
-  return ((i == string_length) ? i : 0);
-}
-
-
-inline int _yr_scan_wcompare(
-    const uint8_t* data,
-    int data_size,
-    uint8_t* string,
-    int string_length)
-{
-  const uint8_t* s1 = data;
-  uint8_t* s2 = string;
-  int i = 0;
-
-  if (data_size < string_length * 2)
-    return 0;
-
-  while (i < string_length && *s1 == *s2)
-  {
-    s1+=2;
-    s2++;
-    i++;
-  }
-
-  return ((i == string_length) ? i * 2 : 0);
-}
-
-
-inline int _yr_scan_wicompare(
-    const uint8_t* data,
-    int data_size,
-    uint8_t* string,
-    int string_length)
-{
-  const uint8_t* s1 = data;
-  uint8_t* s2 = string;
-  int i = 0;
-
-  if (data_size < string_length * 2)
-    return 0;
-
-  while (i < string_length && lowercase[*s1] == lowercase[*s2])
-  {
-    s1+=2;
-    s2++;
-    i++;
-  }
-
-  return ((i == string_length) ? i * 2 : 0);
-}
-
-
-//
-// _yr_scan_fast_hex_re_exec
-//
-// This function is a replacement for yr_re_exec in some particular cases of
-// regular expressions where a faster algorithm can be used. These regular
-// expressions are those derived from hex strings not containing OR (|)
-// operations. The following hex strings would apply:
-//
-//   { 01 ?? 03 04 05 }
-//   { 01 02 0? 04 04 }
-//   { 01 02 [1] 04 05 }
-//   { 01 02 [2-6] 04 06 }
-//
-// In order to match these strings we don't need to use the general case
-// matching algorithm (yr_re_exec), instead we can take advance of the
-// characteristics of the code generated for this kind of strings and do the
-// matching in a faster way.
-//
-// See return values in yr_re_exec (re.c)
-//
-
-#define MAX_FAST_HEX_RE_STACK 300
-
-int _yr_scan_fast_hex_re_exec(
-    uint8_t* code,
-    const uint8_t* input,
-    size_t input_size,
-    int flags,
-    RE_MATCH_CALLBACK_FUNC callback,
-    void* callback_args)
-{
-  uint8_t* code_stack[MAX_FAST_HEX_RE_STACK];
-  const uint8_t* input_stack[MAX_FAST_HEX_RE_STACK];
-  int matches_stack[MAX_FAST_HEX_RE_STACK];
-
-  int sp = 0;
-
-  uint8_t* ip = code;
-  const uint8_t* current_input = input;
-  const uint8_t* next_input;
-  uint8_t mask;
-  uint8_t value;
-
-  int i;
-  int matches;
-  int stop;
-  int increment;
-
-  increment = flags & RE_FLAGS_BACKWARDS ? -1 : 1;
-
-  code_stack[sp] = code;
-  input_stack[sp] = input;
-  matches_stack[sp] = 0;
-  sp++;
-
-  while (sp > 0)
-  {
-    sp--;
-    ip = code_stack[sp];
-    current_input = input_stack[sp];
-    matches = matches_stack[sp];
-    stop = FALSE;
-
-    while(!stop)
-    {
-      if (flags & RE_FLAGS_BACKWARDS)
-      {
-        if (current_input <= input - input_size)
-          break;
-      }
-      else
-      {
-        if (current_input >= input + input_size)
-          break;
-      }
-
-      switch(*ip)
-      {
-        case RE_OPCODE_LITERAL:
-          if (*current_input == *(ip + 1))
-          {
-            matches++;
-            current_input += increment;
-            ip += 2;
-          }
-          else
-          {
-            stop = TRUE;
-          }
-          break;
-
-        case RE_OPCODE_MASKED_LITERAL:
-          value = *(int16_t*)(ip + 1) & 0xFF;
-          mask = *(int16_t*)(ip + 1) >> 8;
-          if ((*current_input & mask) == value)
-          {
-            matches++;
-            current_input += increment;
-            ip += 3;
-          }
-          else
-          {
-            stop = TRUE;
-          }
-          break;
-
-        case RE_OPCODE_ANY:
-          matches++;
-          current_input += increment;
-          ip += 1;
-          break;
-
-        case RE_OPCODE_PUSH:
-          for (i = *(uint16_t*)(ip + 1); i > 0; i--)
-          {
-            if (flags & RE_FLAGS_BACKWARDS)
-            {
-              next_input = current_input - i;
-              if (next_input <= input - input_size)
-                continue;
-            }
-            else
-            {
-              next_input = current_input + i;
-              if (next_input >= input + input_size)
-                continue;
-            }
-
-            if ( *(ip + 11) != RE_OPCODE_LITERAL ||
-                (*(ip + 11) == RE_OPCODE_LITERAL &&
-                 *(ip + 12) == *next_input))
-            {
-              assert(sp < MAX_FAST_HEX_RE_STACK);
-
-              if (sp >= MAX_FAST_HEX_RE_STACK)
-                return -3;
-
-              code_stack[sp] = ip + 11;
-              input_stack[sp] = next_input;
-              matches_stack[sp] = matches + i;
-              sp++;
-            }
-          }
-          ip += 11;
-          break;
-
-        default:
-          assert(FALSE);
-      }
-
-      if (*ip == RE_OPCODE_MATCH)
-      {
-        if (flags & RE_FLAGS_EXHAUSTIVE)
-        {
-          callback(
-            flags & RE_FLAGS_BACKWARDS ? current_input + 1 : input,
-            matches,
-            flags,
-            callback_args);
-          stop = TRUE;
-        }
-        else
-        {
-          return matches;
-        }
-      }
-    }
-  }
-
-  return -1;
-}
-
-
-void _yr_scan_update_match_chain_length(
-    int tidx,
-    YR_STRING* string,
-    YR_MATCH* match_to_update,
-    int chain_length)
-{
-  YR_MATCH* match;
-  size_t ending_offset;
-
-  match_to_update->chain_length = chain_length;
-
-  if (string->chained_to != NULL)
-    match = string->chained_to->unconfirmed_matches[tidx].head;
-  else
-    match = NULL;
-
-  while (match != NULL)
-  {
-    ending_offset = match->offset + match->length;
-
-    if (ending_offset + string->chain_gap_max >= match_to_update->offset &&
-        ending_offset + string->chain_gap_min <= match_to_update->offset)
-    {
-      _yr_scan_update_match_chain_length(
-          tidx, string->chained_to, match, chain_length + 1);
-    }
-
-    match = match->next;
-  }
-}
-
-
-int _yr_scan_add_match_to_list(
-    YR_MATCH* match,
-    YR_MATCHES* matches_list)
-{
-  YR_MATCH* insertion_point = matches_list->tail;
-
-  if (matches_list->count == MAX_STRING_MATCHES)
-    return ERROR_TOO_MANY_MATCHES;
-
-  while (insertion_point != NULL)
-  {
-    if (match->offset == insertion_point->offset)
-    {
-      insertion_point->length = match->length;
-      return ERROR_SUCCESS;
-    }
-
-    if (match->offset > insertion_point->offset)
-      break;
-
-    insertion_point = insertion_point->prev;
-  }
-
-  match->prev = insertion_point;
-
-  if (insertion_point != NULL)
-  {
-    match->next = insertion_point->next;
-    insertion_point->next = match;
-  }
-  else
-  {
-    match->next = matches_list->head;
-    matches_list->head = match;
-  }
-
-  matches_list->count++;
-
-  if (match->next != NULL)
-    match->next->prev = match;
-  else
-    matches_list->tail = match;
-
-  return ERROR_SUCCESS;
-}
-
-
-void _yr_scan_remove_match_from_list(
-    YR_MATCH* match,
-    YR_MATCHES* matches_list)
-{
-  if (match->prev != NULL)
-    match->prev->next = match->next;
-
-  if (match->next != NULL)
-    match->next->prev = match->prev;
-
-  if (matches_list->head == match)
-    matches_list->head = match->next;
-
-  if (matches_list->tail == match)
-    matches_list->tail = match->prev;
-
-  matches_list->count--;
-  match->next = NULL;
-  match->prev = NULL;
-}
-
-
-int _yr_scan_verify_chained_string_match(
-    YR_ARENA* matches_arena,
-    YR_STRING* matching_string,
-    const uint8_t* match_data,
-    size_t match_offset,
-    int32_t match_length,
-    int tidx)
-{
-  YR_STRING* string;
-  YR_MATCH* match;
-  YR_MATCH* next_match;
-  YR_MATCH* new_match;
-
-  size_t lower_offset;
-  size_t ending_offset;
-  int32_t full_chain_length;
-
-  int add_match = FALSE;
-
-  if (matching_string->chained_to == NULL)
-  {
-    add_match = TRUE;
-  }
-  else
-  {
-    if (matching_string->unconfirmed_matches[tidx].head != NULL)
-      lower_offset = matching_string->unconfirmed_matches[tidx].head->offset;
-    else
-      lower_offset = match_offset;
-
-    match = matching_string->chained_to->unconfirmed_matches[tidx].head;
-
-    while (match != NULL)
-    {
-      next_match = match->next;
-      ending_offset = match->offset + match->length;
-
-      if (ending_offset + matching_string->chain_gap_max < lower_offset)
-      {
-        _yr_scan_remove_match_from_list(
-            match, &matching_string->chained_to->unconfirmed_matches[tidx]);
-      }
-      else
-      {
-        if (ending_offset + matching_string->chain_gap_max >= match_offset &&
-            ending_offset + matching_string->chain_gap_min <= match_offset)
-        {
-          add_match = TRUE;
-          break;
-        }
-      }
-
-      match = next_match;
-    }
-  }
-
-  if (add_match)
-  {
-    if (STRING_IS_CHAIN_TAIL(matching_string))
-    {
-      match = matching_string->chained_to->unconfirmed_matches[tidx].head;
-
-      while (match != NULL)
-      {
-        ending_offset = match->offset + match->length;
-
-        if (ending_offset + matching_string->chain_gap_max >= match_offset &&
-            ending_offset + matching_string->chain_gap_min <= match_offset)
-        {
-          _yr_scan_update_match_chain_length(
-              tidx, matching_string->chained_to, match, 1);
-        }
-
-        match = match->next;
-      }
-
-      full_chain_length = 0;
-      string = matching_string;
-
-      while(string->chained_to != NULL)
-      {
-        full_chain_length++;
-        string = string->chained_to;
-      }
-
-      // "string" points now to the head of the strings chain
-
-      match = string->unconfirmed_matches[tidx].head;
-
-      while (match != NULL)
-      {
-        next_match = match->next;
-
-        if (match->chain_length == full_chain_length)
-        {
-          _yr_scan_remove_match_from_list(
-              match, &string->unconfirmed_matches[tidx]);
-
-          match->length = match_offset - match->offset + match_length;
-          match->data = match_data - match_offset + match->offset;
-          match->prev = NULL;
-          match->next = NULL;
-
-          FAIL_ON_ERROR(_yr_scan_add_match_to_list(
-              match, &string->matches[tidx]));
-        }
-
-        match = next_match;
-      }
-    }
-    else
-    {
-      FAIL_ON_ERROR(yr_arena_allocate_memory(
-          matches_arena,
-          sizeof(YR_MATCH),
-          (void**) &new_match));
-
-      new_match->offset = match_offset;
-      new_match->length = match_length;
-      new_match->data = match_data;
-      new_match->prev = NULL;
-      new_match->next = NULL;
-
-      FAIL_ON_ERROR(_yr_scan_add_match_to_list(
-          new_match,
-          &matching_string->unconfirmed_matches[tidx]));
-    }
-  }
-
-  return ERROR_SUCCESS;
-}
-
-
-int _yr_scan_match_callback(
-    const uint8_t* match_data,
-    int32_t match_length,
-    int flags,
-    void* args)
-{
-  CALLBACK_ARGS* callback_args = args;
-
-  YR_STRING* string = callback_args->string;
-  YR_MATCH* new_match;
-
-  int character_size;
-  int result = ERROR_SUCCESS;
-  int tidx = callback_args->tidx;
-
-  size_t match_offset = match_data - callback_args->data;
-
-  if (flags & RE_FLAGS_WIDE)
-    character_size = 2;
-  else
-    character_size = 1;
-
-  // match_length > 0 means that we have found some backward matching
-  // but backward matching overlaps one character with forward matching,
-  // we decrement match_length here to compensate that overlapping.
-
-  if (match_length > 0)
-    match_length -= character_size;
-
-  // total match length is the sum of backward and forward matches.
-
-  match_length = match_length + callback_args->forward_matches;
-
-  if (callback_args->full_word)
-  {
-    if (flags & RE_FLAGS_WIDE)
-    {
-      if (match_offset >= 2 &&
-          *(match_data - 1) == 0 &&
-          isalnum(*(match_data - 2)))
-        return ERROR_SUCCESS;
-
-      if (match_offset + match_length + 1 < callback_args->data_size &&
-          *(match_data + match_length + 1) == 0 &&
-          isalnum(*(match_data + match_length)))
-        return ERROR_SUCCESS;
-    }
-    else
-    {
-      if (match_offset >= 1 &&
-          isalnum(*(match_data - 1)))
-        return ERROR_SUCCESS;
-
-      if (match_offset + match_length < callback_args->data_size &&
-          isalnum(*(match_data + match_length)))
-        return ERROR_SUCCESS;
-    }
-  }
-
-  if (STRING_IS_CHAIN_PART(string))
-  {
-    result = _yr_scan_verify_chained_string_match(
-        callback_args->matches_arena,
-        string,
-        match_data,
-        match_offset,
-        match_length,
-        tidx);
-  }
-  else
-  {
-    result = yr_arena_allocate_memory(
-        callback_args->matches_arena,
-        sizeof(YR_MATCH),
-        (void**) &new_match);
-
-    if (result == ERROR_SUCCESS)
-    {
-      new_match->offset = match_offset;
-      new_match->length = match_length;
-      new_match->data = match_data;
-      new_match->prev = NULL;
-      new_match->next = NULL;
-
-      FAIL_ON_ERROR(_yr_scan_add_match_to_list(
-          new_match,
-          &string->matches[tidx]));
-    }
-  }
-
-  return result;
-}
-
-
-typedef int (*RE_EXEC_FUNC)(
-    uint8_t* code,
-    const uint8_t* input,
-    size_t input_size,
-    int flags,
-    RE_MATCH_CALLBACK_FUNC callback,
-    void* callback_args);
-
-
-int _yr_scan_verify_re_match(
-    YR_AC_MATCH* ac_match,
-    const uint8_t* data,
-    size_t data_size,
-    size_t offset,
-    YR_ARENA* matches_arena)
-{
-  CALLBACK_ARGS callback_args;
-  RE_EXEC_FUNC exec;
-
-  int forward_matches = -1;
-  int backward_matches = -1;
-  int flags = 0;
-
-  if (STRING_IS_FAST_HEX_REGEXP(ac_match->string))
-    exec = _yr_scan_fast_hex_re_exec;
-  else
-    exec = yr_re_exec;
-
-  if (STRING_IS_NO_CASE(ac_match->string))
-    flags |= RE_FLAGS_NO_CASE;
-
-  if (STRING_IS_HEX(ac_match->string) ||
-      STRING_IS_REGEXP_DOT_ALL(ac_match->string))
-    flags |= RE_FLAGS_DOT_ALL;
-
-  if (STRING_IS_ASCII(ac_match->string))
-  {
-    forward_matches = exec(
-        ac_match->forward_code,
-        data + offset,
-        data_size - offset,
-        flags,
-        NULL,
-        NULL);
-  }
-
-  if (STRING_IS_WIDE(ac_match->string) && forward_matches == -1)
-  {
-    flags |= RE_FLAGS_WIDE;
-    forward_matches = exec(
-        ac_match->forward_code,
-        data + offset,
-        data_size - offset,
-        flags,
-        NULL,
-        NULL);
-  }
-
-  switch(forward_matches)
-  {
-    case -1:
-      return ERROR_SUCCESS;
-    case -2:
-      return ERROR_INSUFICIENT_MEMORY;
-    case -3:
-      return ERROR_INTERNAL_FATAL_ERROR;
-  }
-
-  if (forward_matches == 0 && ac_match->backward_code == NULL)
-    return ERROR_SUCCESS;
-
-  callback_args.string = ac_match->string;
-  callback_args.data = data;
-  callback_args.data_size = data_size;
-  callback_args.matches_arena = matches_arena;
-  callback_args.forward_matches = forward_matches;
-  callback_args.full_word = STRING_IS_FULL_WORD(ac_match->string);
-  callback_args.tidx = yr_get_tidx();
-
-  if (ac_match->backward_code != NULL)
-  {
-    backward_matches = exec(
-        ac_match->backward_code,
-        data + offset,
-        offset + 1,
-        flags | RE_FLAGS_BACKWARDS | RE_FLAGS_EXHAUSTIVE,
-        _yr_scan_match_callback,
-        (void*) &callback_args);
-
-    if (backward_matches == -2)
-      return ERROR_INSUFICIENT_MEMORY;
-
-    if (backward_matches == -3)
-      return ERROR_INTERNAL_FATAL_ERROR;
-  }
-  else
-  {
-    FAIL_ON_ERROR(_yr_scan_match_callback(
-        data + offset, 0, flags, &callback_args));
-  }
-
-  return ERROR_SUCCESS;
-}
-
-
-int _yr_scan_verify_literal_match(
-    YR_AC_MATCH* ac_match,
-    const uint8_t* data,
-    size_t data_size,
-    size_t offset,
-    YR_ARENA* matches_arena)
-{
-  int flags = 0;
-  int forward_matches = 0;
-
-  CALLBACK_ARGS callback_args;
-  YR_STRING* string = ac_match->string;
-
-  if (STRING_FITS_IN_ATOM(string))
-  {
-    if (STRING_IS_WIDE(string))
-      forward_matches = string->length * 2;
-    else
-      forward_matches = string->length;
-  }
-  else if (STRING_IS_NO_CASE(string))
-  {
-    flags |= RE_FLAGS_NO_CASE;
-
-    if (STRING_IS_ASCII(string))
-    {
-      forward_matches = _yr_scan_icompare(
-          data + offset,
-          data_size - offset,
-          string->string,
-          string->length);
-    }
-
-    if (STRING_IS_WIDE(string) && forward_matches == 0)
-    {
-      flags |= RE_FLAGS_WIDE;
-      forward_matches = _yr_scan_wicompare(
-          data + offset,
-          data_size - offset,
-          string->string,
-          string->length);
-    }
-  }
-  else
-  {
-    if (STRING_IS_ASCII(string))
-    {
-      forward_matches = _yr_scan_compare(
-          data + offset,
-          data_size - offset,
-          string->string,
-          string->length);
-    }
-
-    if (STRING_IS_WIDE(string) && forward_matches == 0)
-    {
-      flags |= RE_FLAGS_WIDE;
-      forward_matches = _yr_scan_wcompare(
-          data + offset,
-          data_size - offset,
-          string->string,
-          string->length);
-    }
-  }
-
-  if (forward_matches > 0)
-  {
-    if (STRING_IS_FULL_WORD(string))
-    {
-      if (flags & RE_FLAGS_WIDE)
-      {
-        if (offset >= 2 &&
-            *(data + offset - 1) == 0 &&
-            isalnum(*(data + offset - 2)))
-          return ERROR_SUCCESS;
-
-        if (offset + forward_matches + 1 < data_size &&
-            *(data + offset + forward_matches + 1) == 0 &&
-            isalnum(*(data + offset + forward_matches)))
-          return ERROR_SUCCESS;
-      }
-      else
-      {
-        if (offset >= 1 &&
-            isalnum(*(data + offset - 1)))
-          return ERROR_SUCCESS;
-
-        if (offset + forward_matches < data_size &&
-            isalnum(*(data + offset + forward_matches)))
-          return ERROR_SUCCESS;
-      }
-    }
-
-    callback_args.string = string;
-    callback_args.data = data;
-    callback_args.data_size = data_size;
-    callback_args.matches_arena = matches_arena;
-    callback_args.forward_matches = forward_matches;
-    callback_args.full_word = STRING_IS_FULL_WORD(string);
-    callback_args.tidx = yr_get_tidx();
-
-    FAIL_ON_ERROR(_yr_scan_match_callback(
-        data + offset, 0, flags, &callback_args));
-  }
-
-  return ERROR_SUCCESS;
-}
-
-
-inline int _yr_scan_verify_match(
-    YR_AC_MATCH* ac_match,
-    const uint8_t* data,
-    size_t data_size,
-    size_t offset,
-    YR_ARENA* matches_arena,
-    int fast_scan_mode)
-{
-  YR_STRING* string = ac_match->string;
-
-  if (data_size - offset <= 0)
-    return ERROR_SUCCESS;
-
-  if (fast_scan_mode &&
-      STRING_IS_SINGLE_MATCH(string) &&
-      STRING_FOUND(string))
-    return ERROR_SUCCESS;
-
-  if (STRING_IS_LITERAL(string))
-  {
-    FAIL_ON_ERROR(_yr_scan_verify_literal_match(
-        ac_match, data, data_size, offset, matches_arena));
-  }
-  else
-  {
-    FAIL_ON_ERROR(_yr_scan_verify_re_match(
-        ac_match, data, data_size, offset, matches_arena));
-  }
-
-  return ERROR_SUCCESS;
-}
-
 
 void _yr_rules_lock(
     YR_RULES* rules)
@@ -1029,11 +195,48 @@ struct _YR_CONTEXT {
   void* user_data;
 };
 
+#ifdef PROFILING_ENABLED
+void yr_rules_print_profiling_info(
+    YR_RULES* rules)
+{
+  YR_RULE* rule;
+  YR_STRING* string;
+
+  clock_t clock_ticks;
+
+  printf("===== PROFILING INFORMATION =====\n");
+
+  rule = rules->rules_list_head;
+
+  while (!RULE_IS_NULL(rule))
+  {
+    clock_ticks = rule->clock_ticks;
+    string = rule->strings;
+
+    while (!STRING_IS_NULL(string))
+    {
+      clock_ticks += string->clock_ticks;
+      string++;
+    }
+
+    printf(
+        "%s:%s: %li\n",
+        rule->ns->name,
+        rule->identifier,
+        clock_ticks);
+
+    rule++;
+  }
+
+  printf("================================\n");
+}
+#endif
+
+
 int yr_rules_scan_mem_block(
     YR_RULES* rules,
-    const uint8_t* data,
-    size_t data_size,
-    int fast_scan_mode,
+    YR_MEMORY_BLOCK* block,
+    int flags,
     int timeout,
     time_t start_time,
     YR_ARENA* matches_arena)
@@ -1047,7 +250,7 @@ int yr_rules_scan_mem_block(
   current_state = rules->automaton->root;
   i = 0;
 
-  while (i < data_size)
+  while (i < block->size)
   {
     ac_match = current_state->matches;
 
@@ -1055,24 +258,25 @@ int yr_rules_scan_mem_block(
     {
       if (ac_match->backtrack <= i)
       {
-        FAIL_ON_ERROR(_yr_scan_verify_match(
+        FAIL_ON_ERROR(yr_scan_verify_match(
             ac_match,
-            data,
-            data_size,
+            block->data,
+            block->size,
+            block->base,
             i - ac_match->backtrack,
             matches_arena,
-            fast_scan_mode));
+            flags));
       }
 
       ac_match = ac_match->next;
     }
 
-    next_state = yr_ac_next_state(current_state, data[i]);
+    next_state = yr_ac_next_state(current_state, block->data[i]);
 
     while (next_state == NULL && current_state->depth > 0)
     {
       current_state = current_state->failure;
-      next_state = yr_ac_next_state(current_state, data[i]);
+      next_state = yr_ac_next_state(current_state, block->data[i]);
     }
 
     if (next_state != NULL)
@@ -1091,15 +295,16 @@ int yr_rules_scan_mem_block(
 
   while (ac_match != NULL)
   {
-    if (ac_match->backtrack <= data_size)
+    if (ac_match->backtrack <= block->size)
     {
-      FAIL_ON_ERROR(_yr_scan_verify_match(
+      FAIL_ON_ERROR(yr_scan_verify_match(
           ac_match,
-          data,
-          data_size,
-          data_size - ac_match->backtrack,
+          block->data,
+          block->size,
+          block->base,
+          block->size - ac_match->backtrack,
           matches_arena,
-          fast_scan_mode));
+          flags));
     }
 
     ac_match = ac_match->next;
@@ -1112,15 +317,17 @@ int yr_rules_scan_mem_block(
 int yr_rules_scan_mem_blocks(
     YR_RULES* rules,
     YR_MEMORY_BLOCK* block,
-    int scanning_process_memory,
+    int flags,
     YR_CALLBACK_FUNC callback,
     void* user_data,
-    int fast_scan_mode,
     int timeout)
 {
-  int result = ERROR_SUCCESS;
+  YR_SCAN_CONTEXT context;
+  YR_RULE* rule;
+  YR_OBJECT* object;
+  YR_EXTERNAL_VARIABLE* external;
+  YR_ARENA* matches_arena = NULL;
 
-<<<<<<< HEAD
   YR_CONTEXT *context = NULL;
   result = yr_incr_scan_init(&context, rules, fast_scan_mode, timeout, callback, user_data);
   if ( result != ERROR_SUCCESS )
@@ -1135,14 +342,24 @@ int yr_rules_scan_mem_blocks(
 
     block = block->next;
   }
-=======
+
   time_t start_time;
   tidx_mask_t bit;
 
   int message;
   int tidx = 0;
   int result = ERROR_SUCCESS;
->>>>>>> origin/master
+
+  //if (block == NULL)
+  //  return ERROR_SUCCESS;
+
+  //context.flags = flags;
+  //context.callback = callback;
+  //context.user_data = user_data;
+  //context.file_size = block->size;
+  //context.mem_block = block;
+  //context.entry_point = UNDEFINED;
+  //context.objects_table = NULL;
 
   result = yr_incr_scan_finish(context);
 
@@ -1230,27 +447,56 @@ int yr_incr_scan_add_block_with_base(
 {
   int result;
 
-  if (context->eval_context.entry_point == UNDEFINED)
+  result = yr_hash_table_create(64, &context.objects_table);
+
+  if (result != ERROR_SUCCESS)
+    goto _exit;
+
+  external = rules->externals_list_head;
+
+  while (!EXTERNAL_VARIABLE_IS_NULL(external))
   {
-    if (scanning_process_memory)
-      context->eval_context.entry_point = yr_get_entry_point_address(
-          buffer,
-          buffer_size,
-          buffer_base);
-    else
-      context->eval_context.entry_point = yr_get_entry_point_offset(
-          buffer,
-          buffer_size);
+    result = yr_object_from_external_variable(
+        external,
+        &object);
+
+    if (result == ERROR_SUCCESS)
+      result = yr_hash_table_add(
+          context.objects_table,
+          external->identifier,
+          NULL,
+          (void*) object);
+
+    if (result != ERROR_SUCCESS)
+      goto _exit;
+
+    external++;
   }
 
-  result = yr_rules_scan_mem_block(
-    context->rules,
-    buffer,
-    buffer_size,
-    context->fast_scan_mode,
-    context->timeout,
-    context->start_time,
-    context->matches_arena);
+  start_time = time(NULL);
+
+  while (block != NULL)
+  {
+    if (context.entry_point == UNDEFINED)
+    {
+      if (flags & SCAN_FLAGS_PROCESS_MEMORY)
+        context.entry_point = yr_get_entry_point_address(
+            block->data,
+            block->size,
+            block->base);
+      else
+        context.entry_point = yr_get_entry_point_offset(
+            block->data,
+            block->size);
+    }
+
+    result = yr_rules_scan_mem_block(
+        rules,
+        block,
+        flags,
+        timeout,
+        start_time,
+        matches_arena);
 
   return result;
 }
@@ -1331,13 +577,18 @@ int yr_incr_scan_finish(
   context->callback(CALLBACK_MSG_SCAN_FINISHED, NULL, context->user_data);
 
 _exit:
-  _yr_rules_clean_matches(context->rules);
+
+  yr_modules_unload_all(&context);
+
+  _yr_rules_clean_matches(rules);
 
   if (context->matches_arena != NULL)
     yr_arena_destroy(context->matches_arena);
 
-  if (context != NULL)
-    yr_free(context);
+  if (context.objects_table != NULL)
+    yr_hash_table_destroy(
+        context.objects_table,
+        (YR_HASH_TABLE_FREE_VALUE_FUNC) yr_object_destroy);
 
   _yr_rules_lock(rules);
   rules->tidx_mask &= ~(1 << tidx);
@@ -1353,9 +604,9 @@ int yr_rules_scan_mem(
     YR_RULES* rules,
     uint8_t* buffer,
     size_t buffer_size,
+    int flags,
     YR_CALLBACK_FUNC callback,
     void* user_data,
-    int fast_scan_mode,
     int timeout)
 {
   YR_MEMORY_BLOCK block;
@@ -1368,10 +619,9 @@ int yr_rules_scan_mem(
   return yr_rules_scan_mem_blocks(
       rules,
       &block,
-      FALSE,
+      flags,
       callback,
       user_data,
-      fast_scan_mode,
       timeout);
 }
 
@@ -1379,12 +629,12 @@ int yr_rules_scan_mem(
 int yr_rules_scan_file(
     YR_RULES* rules,
     const char* filename,
+    int flags,
     YR_CALLBACK_FUNC callback,
     void* user_data,
-    int fast_scan_mode,
     int timeout)
 {
-  MAPPED_FILE mfile;
+  YR_MAPPED_FILE mfile;
   int result;
 
   result = yr_filemap_map(filename, &mfile);
@@ -1395,9 +645,9 @@ int yr_rules_scan_file(
         rules,
         mfile.data,
         mfile.size,
+        flags,
         callback,
         user_data,
-        fast_scan_mode,
         timeout);
 
     yr_filemap_unmap(&mfile);
@@ -1410,9 +660,9 @@ int yr_rules_scan_file(
 int yr_rules_scan_proc(
     YR_RULES* rules,
     int pid,
+    int flags,
     YR_CALLBACK_FUNC callback,
     void* user_data,
-    int fast_scan_mode,
     int timeout)
 {
   YR_MEMORY_BLOCK* first_block;
@@ -1427,10 +677,9 @@ int yr_rules_scan_proc(
     result = yr_rules_scan_mem_blocks(
         rules,
         first_block,
-        TRUE,
+        flags | SCAN_FLAGS_PROCESS_MEMORY,
         callback,
         user_data,
-        fast_scan_mode,
         timeout);
 
   block = first_block;
@@ -1464,7 +713,6 @@ int yr_rules_load(
 {
   YR_RULES* new_rules;
   YARA_RULES_FILE_HEADER* header;
-  YR_RULE* rule;
 
   int result;
 
@@ -1500,7 +748,6 @@ int yr_rules_load(
     return ERROR_INTERNAL_FATAL_ERROR;
   #endif
 
-  rule = new_rules->rules_list_head;
   *rules = new_rules;
 
   return ERROR_SUCCESS;

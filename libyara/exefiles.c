@@ -19,12 +19,11 @@ limitations under the License.
 #ifdef WIN32
 #include <windows.h>
 #else
-#include "pe.h"
+#include <yara/pe.h>
 #endif
 
-#include "elf.h"
-#include "exec.h"
-
+#include <yara/elf.h>
+#include <yara/exec.h>
 
 #ifndef NULL
 #define NULL 0
@@ -35,12 +34,12 @@ limitations under the License.
 #endif
 
 
-PIMAGE_NT_HEADERS yr_get_pe_header(
+PIMAGE_NT_HEADERS32 yr_get_pe_header(
     const uint8_t* buffer,
     size_t buffer_length)
 {
   PIMAGE_DOS_HEADER mz_header;
-  PIMAGE_NT_HEADERS pe_header;
+  PIMAGE_NT_HEADERS32 pe_header;
 
   size_t headers_size = 0;
 
@@ -62,7 +61,7 @@ PIMAGE_NT_HEADERS yr_get_pe_header(
   if (buffer_length < headers_size)
     return NULL;
 
-  pe_header = (PIMAGE_NT_HEADERS) (buffer + mz_header->e_lfanew);
+  pe_header = (PIMAGE_NT_HEADERS32) (buffer + mz_header->e_lfanew);
 
   headers_size += pe_header->FileHeader.SizeOfOptionalHeader;
 
@@ -81,14 +80,18 @@ PIMAGE_NT_HEADERS yr_get_pe_header(
 
 
 uint64_t yr_pe_rva_to_offset(
-    PIMAGE_NT_HEADERS pe_header,
+    PIMAGE_NT_HEADERS32 pe_header,
     uint64_t rva,
     size_t buffer_length)
 {
   int i = 0;
   PIMAGE_SECTION_HEADER section;
+  DWORD section_rva;
+  DWORD section_offset;
 
   section = IMAGE_FIRST_SECTION(pe_header);
+  section_rva = 0;
+  section_offset = 0;
 
   while(i < MIN(pe_header->FileHeader.NumberOfSections, 60))
   {
@@ -96,9 +99,10 @@ uint64_t yr_pe_rva_to_offset(
         (uint8_t*) pe_header + sizeof(IMAGE_SECTION_HEADER) < buffer_length)
     {
       if (rva >= section->VirtualAddress &&
-          rva <  section->VirtualAddress + section->SizeOfRawData)
+          section_rva <= section->VirtualAddress)
       {
-        return section->PointerToRawData + (rva - section->VirtualAddress);
+        section_rva = section->VirtualAddress;
+        section_offset = section->PointerToRawData;
       }
 
       section++;
@@ -106,11 +110,11 @@ uint64_t yr_pe_rva_to_offset(
     }
     else
     {
-      break;
+      return 0;
     }
   }
 
-  return 0;
+  return section_offset + (rva - section_rva);
 }
 
 
@@ -237,7 +241,7 @@ uint64_t yr_get_entry_point_offset(
     const uint8_t* buffer,
     size_t buffer_length)
 {
-  PIMAGE_NT_HEADERS pe_header;
+  PIMAGE_NT_HEADERS32 pe_header;
   elf32_header_t* elf_header32;
   elf64_header_t* elf_header64;
 
@@ -277,7 +281,7 @@ uint64_t yr_get_entry_point_address(
     size_t buffer_length,
     size_t base_address)
 {
-  PIMAGE_NT_HEADERS pe_header;
+  PIMAGE_NT_HEADERS32 pe_header;
 
   elf32_header_t* elf_header32;
   elf64_header_t* elf_header64;

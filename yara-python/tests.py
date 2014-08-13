@@ -112,6 +112,7 @@ RE_TESTS = [
   ('(a+|b)*', 'ab', SUCCEED, 'ab'),
   ('a|b|c|d|e', 'e', SUCCEED, 'e'),
   ('(a|b|c|d|e)f', 'ef', SUCCEED, 'ef'),
+  ('.b{2}', 'abb', SUCCEED, 'abb'),
   ('ab{1}c', 'abc', SUCCEED, 'abc'),
   ('ab{1,2}c', 'abbc', SUCCEED, 'abbc'),
   ('ab{1,}c', 'abbbc', SUCCEED, 'abbbc'),
@@ -159,6 +160,18 @@ RE_TESTS = [
   ('a[^]b]c', 'adc', SUCCEED, 'adc'),
   ('[^ab]*', 'cde', SUCCEED, 'cde'),
   (')(', '', SYNTAX_ERROR),
+  (r'a\sb', 'a b', SUCCEED, 'a b'),
+  (r'a\sb', 'a\tb', SUCCEED, 'a\tb'),
+  (r'a\sb', 'a\rb', SUCCEED, 'a\rb'),
+  (r'a\sb', 'a\nb', SUCCEED, 'a\nb'),
+  (r'a\sb', 'a\vb', SUCCEED, 'a\vb'),
+  (r'a\sb', 'a\fb', SUCCEED, 'a\fb'),
+  (r'a\Sb', 'a b', FAIL),
+  (r'a\Sb', 'a\tb', FAIL),
+  (r'a\Sb', 'a\rb', FAIL),
+  (r'a\Sb', 'a\nb', FAIL),
+  (r'a\Sb', 'a\vb', FAIL),
+  (r'a\Sb', 'a\fb', FAIL),
   (r'\n\r\t\f\a', '\n\r\t\f\a', SUCCEED, '\n\r\t\f\a'),
   (r'[\n][\r][\t][\f][\a]', '\n\r\t\f\a', SUCCEED, '\n\r\t\f\a'),
   (r'\x00\x01\x02', '\x00\x01\x02', SUCCEED, '\x00\x01\x02'),
@@ -412,7 +425,11 @@ class TestYara(unittest.TestCase):
 
         rules = yara.compile(source='rule test { strings: $a = { 61 [0-3] (62|63) } condition: $a }')
         matches = rules.match(data='abbb')
-        self.assertTrue(matches[0].strings == [(0L, '$a', 'ab')])
+
+        if sys.version_info[0] >= 3:
+          self.assertTrue(matches[0].strings == [(0, '$a', bytes('ab', 'utf-8'))])
+        else:
+          self.assertTrue(matches[0].strings == [(0, '$a', 'ab')])
 
     def testCount(self):
 
@@ -442,6 +459,18 @@ class TestYara(unittest.TestCase):
             'rule test { strings: $a = "ssi" $b = "mis" $c = "oops" condition: 2 of them }',
             'rule test { strings: $a1 = "dummy1" $b1 = "dummy1" $b2 = "ssi" condition: any of ($a*, $b*) }',
         ], 'mississipi')
+
+        self.assertTrueRules(["""
+            rule test
+            {
+              strings:
+                $ = /abc/
+                $ = /def/
+                $ = /ghi/
+              condition:
+                for any of ($*) : ( for any i in (1..#): (uint8(@[i] - 1) == 0x00) )
+            }"""
+        ], 'abc\x00def\x00ghi')
 
         self.assertFalseRules([
             'rule test { strings: $a = "ssi" $b = "mis" $c = "oops" condition: all of them }'
@@ -478,7 +507,8 @@ class TestYara(unittest.TestCase):
         self.assertFalseRules([
             'rule test { strings: $a = /^ssi/ condition: $a }',
             'rule test { strings: $a = /ssi$/ condition: $a }',
-            'rule test { strings: $a = /ssissi/ fullword condition: $a }'
+            'rule test { strings: $a = /ssissi/ fullword condition: $a }',
+            'rule test { strings: $a = /^[isp]+/ condition: $a }'
         ], 'mississippi')
 
         for test in RE_TESTS:
@@ -576,6 +606,12 @@ class TestYara(unittest.TestCase):
         r = yara.compile(source='rule test { condition: ext_bool }', externals={'ext_bool': True})
         self.assertTrue(r.match(data='dummy'))
 
+        r = yara.compile(source='rule test { condition: ext_str }', externals={'ext_str': ''})
+        self.assertFalse(r.match(data='dummy'))
+
+        r = yara.compile(source='rule test { condition: ext_str }', externals={'ext_str': 'foo'})
+        self.assertTrue(r.match(data='dummy'))
+
         r = yara.compile(source='rule test { condition: ext_bool }', externals={'ext_bool': False})
         self.assertFalse(r.match(data='dummy'))
 
@@ -602,6 +638,9 @@ class TestYara(unittest.TestCase):
 
         r = yara.compile(source='rule test { condition: ext_str matches /^miss/ }', externals={'ext_str': 'mississippi'})
         self.assertTrue(r.match(data='dummy'))
+
+        r = yara.compile(source='rule test { condition: ext_str matches /^iss/ }', externals={'ext_str': 'mississippi'})
+        self.assertFalse(r.match(data='dummy'))
 
         r = yara.compile(source='rule test { condition: ext_str matches /ssi$/ }', externals={'ext_str': 'mississippi'})
         self.assertFalse(r.match(data='dummy'))
@@ -652,6 +691,25 @@ class TestYara(unittest.TestCase):
             }
             """,
         ])
+
+    def testModules(self):
+
+        self.assertTrueRules([
+            'import "tests" rule test { condition: tests.constants.one + 1 == tests.constants.two }',
+            'import "tests" rule test { condition: tests.constants.foo == "foo" }',
+            'import "tests" rule test { condition: tests.struct_array[1].i == 1 }',
+            'import "tests" rule test { condition: tests.struct_array[0].i == 1 or true}',
+            'import "tests" rule test { condition: tests.integer_array[0] == 0}',
+            'import "tests" rule test { condition: tests.integer_array[1] == 1}',
+            'import "tests" rule test { condition: tests.string_array[0] == "foo"}',
+            'import "tests" rule test { condition: tests.string_array[2] == "baz"}',
+            'import "tests" rule test { condition: tests.sum(1,1) == 2}',
+          ])
+
+        self.assertFalseRules([
+            'import "tests" rule test { condition: tests.struct_array[0].i == 1 }',
+            'import "tests" rule test { condition: tests.sum(1,1) == 3}',
+          ])
 
 
 if __name__ == "__main__":

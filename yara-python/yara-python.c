@@ -25,6 +25,7 @@ limitations under the License.
 #define PyBytes_Check PyString_Check
 #endif
 
+#include <time.h>
 #include <yara.h>
 
 #if PY_VERSION_HEX < 0x02050000 && !defined(PY_SSIZE_T_MIN)
@@ -40,7 +41,7 @@ typedef int Py_ssize_t;
 #if PY_MAJOR_VERSION >= 3
 #define PY_STRING(x) PyUnicode_FromString(x)
 #define PY_STRING_TO_C(x) PyBytes_AsString(\
-                            PyUnicode_AsEncodedString(x, "utf-8", "Error"))
+                            PyUnicode_AsEncodedString(x, "utf-8", "strict"))
 #define PY_STRING_CHECK(x) PyUnicode_Check(x)
 #else
 #define PY_STRING(x) PyString_FromString(x)
@@ -211,6 +212,10 @@ static PyObject * Rules_save(
     PyObject *self,
     PyObject *args);
 
+static PyObject * Rules_profiling_info(
+    PyObject *self,
+    PyObject *args);
+
 static PyObject * Rules_getattro(
     PyObject *self,
     PyObject *name);
@@ -226,6 +231,11 @@ static PyMethodDef Rules_methods[] =
     "save",
     (PyCFunction) Rules_save,
     METH_VARARGS
+  },
+  {
+    "profiling_info",
+    (PyCFunction) Rules_profiling_info,
+    METH_NOARGS
   },
   {
     NULL,
@@ -279,20 +289,23 @@ typedef struct _CALLBACK_DATA
 {
   PyObject *matches;
   PyObject *callback;
+  PyObject *modules_data;
 
 } CALLBACK_DATA;
 
 
 int yara_callback(
     int message,
-    YR_RULE* rule,
-    void* data)
+    void* message_data,
+    void* user_data)
 {
   YR_STRING* string;
   YR_MATCH* m;
   YR_META* meta;
-  char* tag_name;
-  size_t tag_length;
+  YR_RULE* rule;
+  YR_MODULE_IMPORT* module_import;
+
+  const char* tag;
 
   PyObject* tag_list = NULL;
   PyObject* string_list = NULL;
@@ -301,9 +314,13 @@ int yara_callback(
   PyObject* callback_dict;
   PyObject* object;
   PyObject* tuple;
-  PyObject* matches = ((CALLBACK_DATA*) data)->matches;
-  PyObject* callback = ((CALLBACK_DATA*) data)->callback;
+  PyObject* matches = ((CALLBACK_DATA*) user_data)->matches;
+  PyObject* callback = ((CALLBACK_DATA*) user_data)->callback;
+  PyObject* modules_data = ((CALLBACK_DATA*) user_data)->modules_data;
+  PyObject* module_data;
   PyObject* callback_result;
+
+  Py_ssize_t data_size;
   PyGILState_STATE gil_state;
 
   int result = CALLBACK_CONTINUE;
@@ -313,6 +330,43 @@ int yara_callback(
 
   if (message == CALLBACK_MSG_RULE_NOT_MATCHING && callback == NULL)
     return CALLBACK_CONTINUE;
+
+  if (message == CALLBACK_MSG_IMPORT_MODULE)
+  {
+    if (modules_data == NULL)
+      return CALLBACK_CONTINUE;
+
+    module_import = (YR_MODULE_IMPORT*) message_data;
+
+    module_data = PyDict_GetItemString(
+        modules_data,
+        module_import->module_name);
+
+    #if PY_MAJOR_VERSION >= 3
+    if (module_data != NULL && PyBytes_Check(module_data))
+    #else
+    if (module_data != NULL && PyString_Check(module_data))
+    #endif
+    {
+      #if PY_MAJOR_VERSION >= 3
+      PyBytes_AsStringAndSize(
+          module_data,
+          (char**) &module_import->module_data,
+          &data_size);
+      #else
+      PyString_AsStringAndSize(
+          module_data,
+          (char**) &module_import->module_data,
+          &data_size);
+      #endif
+
+      module_import->module_data_size = data_size;
+    }
+
+    return CALLBACK_CONTINUE;
+  }
+
+  rule = (YR_RULE*) message_data;
 
   gil_state = PyGILState_Ensure();
 
@@ -330,22 +384,14 @@ int yara_callback(
     return CALLBACK_ERROR;
   }
 
-  tag_name = rule->tags;
-  tag_length = tag_name != NULL ? strlen(tag_name) : 0;
-
-  while (tag_length > 0)
+  yr_rule_tags_foreach(rule, tag)
   {
-    object = PY_STRING(tag_name);
+    object = PY_STRING(tag);
     PyList_Append(tag_list, object);
     Py_DECREF(object);
-
-    tag_name += tag_length + 1;
-    tag_length = strlen(tag_name);
   }
 
-  meta = rule->metas;
-
-  while(!META_IS_NULL(meta))
+  yr_rule_metas_foreach(rule, meta)
   {
     if (meta->type == META_TYPE_INTEGER)
       object = Py_BuildValue("I", meta->integer);
@@ -356,38 +402,25 @@ int yara_callback(
 
     PyDict_SetItemString(meta_list, meta->identifier, object);
     Py_DECREF(object);
-
-    meta++;
   }
 
-  string = rule->strings;
-
-  while (!STRING_IS_NULL(string))
+  yr_rule_strings_foreach(rule, string)
   {
-    if (STRING_FOUND(string))
+    yr_string_matches_foreach(string, m)
     {
-      m = STRING_MATCHES(string).head;
+      object = PyBytes_FromStringAndSize((char*) m->data, m->length);
 
-      while (m != NULL)
-      {
-        object = PyBytes_FromStringAndSize((char*) m->data, m->length);
+      tuple = Py_BuildValue(
+          "(L,s,O)",
+          m->offset,
+          string->identifier,
+          object);
 
-        tuple = Py_BuildValue(
-            "(L,s,O)",
-            m->offset,
-            string->identifier,
-            object);
+      PyList_Append(string_list, tuple);
 
-        PyList_Append(string_list, tuple);
-
-        Py_DECREF(object);
-        Py_DECREF(tuple);
-
-        m = m->next;
-      }
+      Py_DECREF(object);
+      Py_DECREF(tuple);
     }
-
-    string++;
   }
 
   if (message == CALLBACK_MSG_RULE_MATCHING)
@@ -764,7 +797,7 @@ static PyObject * Rules_match(
 {
   static char *kwlist[] = {
       "filepath", "pid", "data", "externals",
-      "callback", "fast", "timeout", NULL
+      "callback", "fast", "timeout", "modules_data", NULL
       };
 
   char* filepath = NULL;
@@ -785,11 +818,12 @@ static PyObject * Rules_match(
 
   callback_data.matches = NULL;
   callback_data.callback = NULL;
+  callback_data.modules_data = NULL;
 
   if (PyArg_ParseTupleAndKeywords(
         args,
         keywords,
-        "|sis#OOOi",
+        "|sis#OOOiO",
         kwlist,
         &filepath,
         &pid,
@@ -798,7 +832,8 @@ static PyObject * Rules_match(
         &externals,
         &callback_data.callback,
         &fast,
-        &timeout))
+        &timeout,
+        &callback_data.modules_data))
   {
     if (filepath == NULL && data == NULL && pid == 0)
     {
@@ -812,8 +847,18 @@ static PyObject * Rules_match(
       if (!PyCallable_Check(callback_data.callback))
       {
         return PyErr_Format(
-            YaraError,
-            "callback must be callable");
+            PyExc_TypeError,
+            "'callback' must be callable");
+      }
+    }
+
+    if (callback_data.modules_data != NULL)
+    {
+      if (!PyDict_Check(callback_data.modules_data))
+      {
+        return PyErr_Format(
+            PyExc_TypeError,
+            "'modules_data' must be a dictionary");
       }
     }
 
@@ -853,9 +898,9 @@ static PyObject * Rules_match(
       error = yr_rules_scan_file(
           object->rules,
           filepath,
+          fast_mode ? SCAN_FLAGS_FAST_MODE : 0,
           yara_callback,
           &callback_data,
-          fast_mode,
           timeout);
 
       Py_END_ALLOW_THREADS
@@ -870,9 +915,9 @@ static PyObject * Rules_match(
           object->rules,
           (unsigned char*) data,
           (unsigned int) length,
+          fast_mode ? SCAN_FLAGS_FAST_MODE : 0,
           yara_callback,
           &callback_data,
-          fast_mode,
           timeout);
 
       Py_END_ALLOW_THREADS
@@ -886,9 +931,9 @@ static PyObject * Rules_match(
       error = yr_rules_scan_proc(
           object->rules,
           pid,
+          fast_mode ? SCAN_FLAGS_FAST_MODE : 0,
           yara_callback,
           &callback_data,
-          fast_mode,
           timeout);
 
       Py_END_ALLOW_THREADS
@@ -930,8 +975,7 @@ static PyObject * Rules_save(
     if (error != ERROR_SUCCESS)
       return handle_error(error, filepath);
 
-    Py_INCREF(Py_None);
-    return Py_None;
+    Py_RETURN_NONE;
   }
   else
   {
@@ -939,6 +983,53 @@ static PyObject * Rules_save(
         PyExc_TypeError,
           "save() takes 1 argument");
   }
+}
+
+
+static PyObject * Rules_profiling_info(
+    PyObject *self,
+    PyObject *args)
+{
+
+#ifdef PROFILING_ENABLED
+  PyObject* object;
+  PyObject* result;
+
+  YR_RULES* rules = ((Rules*) self)->rules;
+  YR_RULE* rule;
+  YR_STRING* string;
+
+  char key[512];
+  uint64_t clock_ticks;
+
+  result = PyDict_New();
+
+  rule = rules->rules_list_head;
+
+  while (!RULE_IS_NULL(rule))
+  {
+    clock_ticks = rule->clock_ticks;
+    string = rule->strings;
+
+    while (!STRING_IS_NULL(string))
+    {
+      clock_ticks += string->clock_ticks;
+      string++;
+    }
+
+    snprintf(key, sizeof(key), "%s:%s", rule->ns->name, rule->identifier);
+
+    object = PyLong_FromLongLong(clock_ticks);
+    PyDict_SetItemString(result, key, object);
+    Py_DECREF(object);
+
+    rule++;
+  }
+
+  return result;
+#else
+  return PyErr_Format(YaraError, "libyara compiled without profiling support");
+#endif
 }
 
 
@@ -1067,14 +1158,18 @@ static PyObject * yara_compile(
     if (error != ERROR_SUCCESS)
       return handle_error(error, NULL);
 
-    compiler->error_report_function = raise_exception_on_error;
+    yr_compiler_set_callback(compiler, raise_exception_on_error);
 
     if (error_on_warning != NULL)
     {
       if (PyBool_Check(error_on_warning))
       {
         if (PyObject_IsTrue(error_on_warning) == 1)
-          compiler->error_report_function = raise_exception_on_error_or_warning;
+        {
+          yr_compiler_set_callback(
+              compiler,
+              raise_exception_on_error_or_warning);
+        }
       }
       else
       {
@@ -1128,8 +1223,7 @@ static PyObject * yara_compile(
 
       if (fh != NULL)
       {
-        yr_compiler_push_file_name(compiler, filepath);
-        error = yr_compiler_add_file(compiler, fh, NULL);
+        error = yr_compiler_add_file(compiler, fh, NULL, filepath);
         fclose(fh);
       }
       else
@@ -1145,7 +1239,7 @@ static PyObject * yara_compile(
     {
       fd = dup(PyObject_AsFileDescriptor(file));
       fh = fdopen(fd, "r");
-      error = yr_compiler_add_file(compiler, fh, NULL);
+      error = yr_compiler_add_file(compiler, fh, NULL, NULL);
       fclose(fh);
     }
     else if (sources_dict != NULL)
@@ -1196,8 +1290,7 @@ static PyObject * yara_compile(
 
             if (fh != NULL)
             {
-              yr_compiler_push_file_name(compiler, filepath);
-              error = yr_compiler_add_file(compiler, fh, ns);
+              error = yr_compiler_add_file(compiler, fh, ns, filepath);
               fclose(fh);
 
               if (error > 0)
@@ -1324,7 +1417,7 @@ static PyObject * yara_load(
               external->identifier,
               PyLong_FromLong((long) external->integer));
           break;
-        case EXTERNAL_VARIABLE_TYPE_FIXED_STRING:
+        case EXTERNAL_VARIABLE_TYPE_STRING:
           PyDict_SetItemString(
               rules->externals,
               external->identifier,

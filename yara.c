@@ -40,9 +40,6 @@ limitations under the License.
 #include "threading.h"
 #include "config.h"
 
-#ifdef DMALLOC
-#include <dmalloc.h>
-#endif
 
 #define USAGE \
 "usage:  yara [OPTION]... RULES_FILE FILE | PID\n"\
@@ -57,6 +54,7 @@ limitations under the License.
 "  -l <number>              abort scanning after matching a number rules.\n"\
 "  -a <seconds>             abort scanning after a number of seconds has elapsed.\n"\
 "  -d <identifier>=<value>  define external variable.\n"\
+"  -x <module>=<file>       pass file's content as extra data to module.\n"\
 "  -r                       recursively search directories.\n"\
 "  -f                       fast matching mode.\n"\
 "  -w                       disable warnings.\n"\
@@ -114,6 +112,16 @@ typedef struct _EXTERNAL
 } EXTERNAL;
 
 
+typedef struct _MODULE_DATA
+{
+  const char* module_name;
+  void* module_data;
+  size_t module_data_size;
+  struct _MODULE_DATA* next;
+
+} MODULE_DATA;
+
+
 typedef struct _QUEUED_FILE {
 
   char* path;
@@ -139,6 +147,7 @@ int threads = 8;
 TAG* specified_tags_list = NULL;
 IDENTIFIER* specified_rules_list = NULL;
 EXTERNAL* externals_list = NULL;
+MODULE_DATA* modules_data_list = NULL;
 
 
 // file_queue is size-limited queue stored as a circular array, files are
@@ -240,7 +249,10 @@ char* file_queue_get()
 int is_directory(
     const char* path)
 {
-  if (GetFileAttributes(path) & FILE_ATTRIBUTE_DIRECTORY)
+  DWORD attributes = GetFileAttributes(path);
+
+  if (attributes != INVALID_FILE_ATTRIBUTES &&
+	  attributes & FILE_ATTRIBUTE_DIRECTORY)
     return TRUE;
   else
     return FALSE;
@@ -440,10 +452,9 @@ int handle_message(int message, YR_RULE* rule, void* data)
   YR_MATCH* match;
   YR_META* meta;
 
-  char* tag_name;
-  size_t tag_length;
+  const char* tag_name;
+
   int is_matching;
-  int string_found;
   int show = TRUE;
 
   if (show_specified_tags)
@@ -453,19 +464,13 @@ int handle_message(int message, YR_RULE* rule, void* data)
 
     while (tag != NULL)
     {
-      tag_name = rule->tags;
-      tag_length = tag_name != NULL ? strlen(tag_name) : 0;
-
-      while (tag_length > 0)
+      yr_rule_tags_foreach(rule, tag_name)
       {
         if (strcmp(tag_name, tag->identifier) == 0)
         {
           show = TRUE;
           break;
         }
-
-        tag_name += tag_length + 1;
-        tag_length = strlen(tag_name);
       }
 
       tag = tag->next;
@@ -502,17 +507,13 @@ int handle_message(int message, YR_RULE* rule, void* data)
     {
       printf("[");
 
-      tag_name = rule->tags;
-      tag_length = tag_name != NULL ? strlen(tag_name) : 0;
-
-      while (tag_length > 0)
+      yr_rule_tags_foreach(rule, tag_name)
       {
-        printf("%s", tag_name);
-        tag_name += tag_length + 1;
-        tag_length = strlen(tag_name);
-
-        if (tag_length > 0)
+        // print a comma except for the first tag
+        if (tag_name != rule->tags)
           printf(",");
+
+        printf("%s", tag_name);
       }
 
       printf("] ");
@@ -522,23 +523,19 @@ int handle_message(int message, YR_RULE* rule, void* data)
 
     if (show_meta)
     {
-      meta = rule->metas;
-
       printf("[");
 
-      while(!META_IS_NULL(meta))
+      yr_rule_metas_foreach(rule, meta)
       {
+        if (meta != rule->metas)
+          printf(",");
+
         if (meta->type == META_TYPE_INTEGER)
           printf("%s=%d", meta->identifier, meta->integer);
         else if (meta->type == META_TYPE_BOOLEAN)
           printf("%s=%s", meta->identifier, meta->integer ? "true" : "false");
         else
           printf("%s=\"%s\"", meta->identifier, meta->string);
-
-        meta++;
-
-        if (!META_IS_NULL(meta))
-          printf(",");
       }
 
       printf("] ");
@@ -550,30 +547,19 @@ int handle_message(int message, YR_RULE* rule, void* data)
 
     if (show_strings)
     {
-      string = rule->strings;
-
-      while (!STRING_IS_NULL(string))
+      yr_rule_strings_foreach(rule, string)
       {
-        string_found = STRING_FOUND(string);
-
-        if (string_found)
+        yr_string_matches_foreach(string, match)
         {
-          match = STRING_MATCHES(string).head;
+          printf("0x%" PRIx64 ":%s: ",
+              match->base + match->offset,
+              string->identifier);
 
-          while (match != NULL)
-          {
-            printf("0x%" PRIx64 ":%s: ", match->offset, string->identifier);
-
-            if (STRING_IS_HEX(string))
-              print_hex_string(match->data, match->length);
-            else
-              print_string(match->data, match->length);
-
-            match = match->next;
-          }
+          if (STRING_IS_HEX(string))
+            print_hex_string(match->data, match->length);
+          else
+            print_string(match->data, match->length);
         }
-
-        string++;
       }
     }
 
@@ -590,13 +576,35 @@ int handle_message(int message, YR_RULE* rule, void* data)
 }
 
 
-int callback(int message, YR_RULE* rule, void* data)
+int callback(int message, void* message_data, void* user_data)
 {
+  YR_MODULE_IMPORT* mi;
+  MODULE_DATA* module_data;
+
   switch(message)
   {
     case CALLBACK_MSG_RULE_MATCHING:
     case CALLBACK_MSG_RULE_NOT_MATCHING:
-      return handle_message(message, rule, data);
+      return handle_message(message, (YR_RULE*) message_data, user_data);
+
+    case CALLBACK_MSG_IMPORT_MODULE:
+      mi = (YR_MODULE_IMPORT*) message_data;
+
+      module_data = modules_data_list;
+
+      while (module_data != NULL)
+      {
+        if (strcmp(module_data->module_name, mi->module_name) == 0)
+        {
+          mi->module_data = module_data->module_data;
+          mi->module_data_size = module_data->module_data_size;
+          break;
+        }
+
+        module_data = module_data->next;
+      }
+
+      return CALLBACK_CONTINUE;
   }
 
   return CALLBACK_ERROR;
@@ -619,9 +627,9 @@ void* scanning_thread(void* param)
     result = yr_rules_scan_file(
         rules,
         file_path,
+        fast_scan ? SCAN_FLAGS_FAST_MODE : 0,
         callback,
         file_path,
-        fast_scan,
         timeout);
 
     if (result != ERROR_SUCCESS)
@@ -650,6 +658,8 @@ void cleanup()
   TAG* next_tag;
   EXTERNAL* external;
   EXTERNAL* next_external;
+  MODULE_DATA* module_data;
+  MODULE_DATA* next_module_data;
 
   tag = specified_tags_list;
 
@@ -677,6 +687,16 @@ void cleanup()
     free(identifier);
     identifier = next_identifier;
   }
+
+  module_data = modules_data_list;
+
+  while(module_data != NULL)
+  {
+    next_module_data = module_data->next;
+    free(module_data);
+    module_data = next_module_data;
+  }
+
 }
 
 
@@ -704,10 +724,13 @@ int process_cmd_line(
   TAG* tag;
   IDENTIFIER* identifier;
   EXTERNAL* external;
+  MODULE_DATA* module_data;
+
+  YR_MAPPED_FILE mapped_file;
 
   opterr = 0;
 
-  while ((c = getopt (argc, (char**) argv, "wrnsvgma:l:t:i:d:p:f")) != -1)
+  while ((c = getopt (argc, (char**) argv, "wrnsvgma:l:t:i:d:x:p:f")) != -1)
   {
     switch (c)
     {
@@ -814,6 +837,42 @@ int process_cmd_line(
             external->string = value;
           }
         }
+        break;
+
+      case 'x':
+
+        equal_sign = strchr(optarg, '=');
+
+        if (equal_sign == NULL)
+        {
+          fprintf(stderr, "Wrong syntax for -x modifier.\n");
+          return 0;
+        }
+
+        module_data = (MODULE_DATA*) malloc(sizeof(MODULE_DATA));
+
+        if (module_data == NULL)
+        {
+          fprintf(stderr, "Not enough memory.\n");
+          return 0;
+        }
+
+        *equal_sign = '\0';
+        value = equal_sign + 1;
+
+        if (yr_filemap_map(value, &mapped_file) != ERROR_SUCCESS)
+        {
+          free(module_data);
+          fprintf(stderr, "Could not open file \"%s\".\n", value);
+          return 0;
+        }
+
+        module_data->module_name = strdup(optarg);
+        module_data->module_data = mapped_file.data;
+        module_data->module_data_size = mapped_file.size;
+        module_data->next = modules_data_list;
+        modules_data_list = module_data;
+
         break;
 
       case 'l':
@@ -970,7 +1029,8 @@ int main(
       external = external->next;
     }
 
-    compiler->error_report_function = print_compiler_error;
+    yr_compiler_set_callback(compiler, print_compiler_error);
+
     rule_file = fopen(argv[optind], "r");
 
     if (rule_file == NULL)
@@ -982,9 +1042,7 @@ int main(
       return EXIT_FAILURE;
     }
 
-    yr_compiler_push_file_name(compiler, argv[optind]);
-
-    errors = yr_compiler_add_file(compiler, rule_file, NULL);
+    errors = yr_compiler_add_file(compiler, rule_file, NULL, argv[optind]);
 
     fclose(rule_file);
 
@@ -1016,9 +1074,9 @@ int main(
     result = yr_rules_scan_proc(
         rules,
         pid,
+        fast_scan ? SCAN_FLAGS_FAST_MODE : 0,
         callback,
         (void*) argv[argc - 1],
-        fast_scan,
         timeout);
 
     if (result != ERROR_SUCCESS)
@@ -1057,9 +1115,9 @@ int main(
     result = yr_rules_scan_file(
         rules,
         argv[argc - 1],
+        fast_scan ? SCAN_FLAGS_FAST_MODE : 0,
         callback,
         (void*) argv[argc - 1],
-        fast_scan,
         timeout);
 
     if (result != ERROR_SUCCESS)
@@ -1069,6 +1127,10 @@ int main(
     }
   }
 
+  #ifdef PROFILING_ENABLED
+  yr_rules_print_profiling_info(rules);
+  #endif
+
   yr_rules_destroy(rules);
   yr_finalize();
 
@@ -1077,4 +1139,3 @@ int main(
 
   return EXIT_SUCCESS;
 }
-
